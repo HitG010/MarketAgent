@@ -1,0 +1,25 @@
+schema_version: 1
+seed: 42
+sample_per_domain: 100
+output_dir: data/processed
+sources:
+  math:
+    dataset: openai/gsm8k
+    config: main
+    split: test
+    revision: 740312add88f781978c0658806c59bc2815b9866
+  code:
+    dataset: google-research-datasets/mbpp
+    config: sanitized
+    split: test
+    revision: 4bb6404fdc6cacfda99d4ac4205087b89d32030c
+  logic:
+    dataset: allenai/ai2_arc
+    config: ARC-Challenge
+    split: test
+    revision: 210d026faf9955653af8916fad021475a3f00453
+  knowledge:
+    dataset: hotpotqa/hotpot_qa
+    config: distractor
+    split: validation
+    revision: 1908d6afbbead072334abe2965f91bd2709910ab
