@@ -1,0 +1,4 @@
+{"domain":"math","id":"fixture-math-1","input":{"question":"What is 20% of 50?"},"metadata":{},"reference":{"answer":"10","rationale":"20 percent of 50 is 10."}}
+{"domain":"code","id":"fixture-code-1","input":{"entry_point":"add","prompt":"Write add(a, b) that returns the sum."},"metadata":{},"reference":{"canonical_solution":"def add(a, b):\n    return a + b","test_setup":"","tests":["assert add(2, 3) == 5","assert add(-1, 1) == 0"]}}
+{"domain":"logic","id":"fixture-logic-1","input":{"choices":[{"label":"A","text":"Paris"},{"label":"B","text":"Rome"},{"label":"C","text":"Madrid"}],"question":"Which city is the capital of France?"},"metadata":{},"reference":{"answer_label":"A"}}
+{"domain":"knowledge","id":"fixture-knowledge-1","input":{"context":["France\nParis is the capital of France."],"question":"What is the capital of France?"},"metadata":{},"reference":{"answers":["Paris"],"supporting_facts":[{"sentence_index":0,"title":"France"}]}}
