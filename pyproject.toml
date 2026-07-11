@@ -1,0 +1,55 @@
+[build-system]
+requires = ["setuptools>=75", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "small-models-society"
+version = "0.1.0"
+description = "Budget-aware evaluation harness for a society of specialist language models"
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+    "datasets>=4.0,<5",
+    "pydantic>=2.10,<3",
+    "PyYAML>=6.0,<7",
+]
+
+[project.optional-dependencies]
+dev = [
+    "mypy>=1.15,<2",
+    "pytest>=8.3,<9",
+    "pytest-cov>=6.0,<7",
+    "ruff>=0.11,<1",
+    "setuptools>=75,<82",
+    "types-PyYAML>=6.0,<7",
+    "wheel>=0.45,<1",
+]
+
+[project.scripts]
+sms = "small_models_society.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+addopts = "--strict-config --strict-markers"
+testpaths = ["tests"]
+markers = [
+    "docker: requires a running Docker daemon",
+]
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "SIM", "RUF"]
+
+[tool.ruff.format]
+quote-style = "double"
+
+[tool.mypy]
+python_version = "3.11"
+strict = true
+packages = ["small_models_society"]
+mypy_path = "src"
