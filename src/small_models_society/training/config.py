@@ -115,6 +115,9 @@ class SupervisedFineTuningConfig(StrictModel):
     eval_strategy: Literal["epoch"] = "epoch"
     save_strategy: Literal["epoch"] = "epoch"
     save_total_limit: int = Field(gt=0)
+    load_best_model_at_end: Literal[True] = True
+    metric_for_best_model: Literal["eval_loss"] = "eval_loss"
+    greater_is_better: Literal[False] = False
     logging_steps: int = Field(gt=0)
     report_to: Literal["none"] = "none"
 
