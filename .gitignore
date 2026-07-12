@@ -9,5 +9,6 @@ __pycache__/
 .coverage
 htmlcov/
 data/processed/
+data/training/
 reports/
 .env

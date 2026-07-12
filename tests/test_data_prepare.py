@@ -6,8 +6,10 @@ from collections.abc import Iterable
 from pathlib import Path
 from typing import Any
 
+import pytest
+
 from small_models_society.data.config import BenchmarkConfig, DatasetSource
-from small_models_society.data.loaders import SourceRow, normalize_code
+from small_models_society.data.loaders import SourceRow, load_source_rows, normalize_code
 from small_models_society.data.prepare import load_benchmark, prepare_benchmark
 from small_models_society.schemas import Domain
 
@@ -120,3 +122,28 @@ def test_mbpp_entry_point_parsing_suppresses_reference_syntax_warnings() -> None
         example = normalize_code(row, 0)
 
     assert example.input.entry_point == "pattern"
+
+
+def test_source_loader_forwards_pinned_revision_and_offline_policy(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: list[dict[str, Any]] = []
+
+    def fake_load_dataset(*args: object, **kwargs: Any) -> list[SourceRow]:
+        calls.append({"args": args, **kwargs})
+        return []
+
+    monkeypatch.setattr("small_models_society.data.loaders.load_dataset", fake_load_dataset)
+    source = DatasetSource(
+        dataset="owner/dataset",
+        config="configuration",
+        split="train",
+        revision="a" * 40,
+    )
+
+    assert list(load_source_rows(source, local_files_only=True)) == []
+
+    assert calls[0]["args"] == ("owner/dataset", "configuration")
+    assert calls[0]["split"] == "train"
+    assert calls[0]["revision"] == "a" * 40
+    assert calls[0]["download_config"].local_files_only is True

@@ -46,6 +46,8 @@ class TrainingDataConfig(StrictModel):
     validation_size_per_domain: int = Field(gt=0)
     max_length: int = Field(gt=0, le=4096)
     output_dir: str = Field(min_length=1)
+    benchmark_path: str = Field(min_length=1)
+    benchmark_manifest_path: str = Field(min_length=1)
     sources: dict[Domain, DatasetSource]
 
     @model_validator(mode="after")

@@ -7,7 +7,7 @@ import warnings
 from collections.abc import Iterable, Mapping
 from typing import Any, cast
 
-from datasets import load_dataset  # type: ignore[import-untyped]
+from datasets import DownloadConfig, load_dataset  # type: ignore[import-untyped]
 
 from small_models_society.data.config import DatasetSource
 from small_models_society.schemas import (
@@ -32,7 +32,11 @@ from small_models_society.schemas import (
 SourceRow = Mapping[str, Any]
 
 
-def load_source_rows(source: DatasetSource) -> Iterable[SourceRow]:
+def load_source_rows(
+    source: DatasetSource,
+    *,
+    local_files_only: bool = False,
+) -> Iterable[SourceRow]:
     """Load one immutable Hugging Face dataset split."""
 
     dataset = load_dataset(
@@ -40,6 +44,7 @@ def load_source_rows(source: DatasetSource) -> Iterable[SourceRow]:
         source.config,
         split=source.split,
         revision=source.revision,
+        download_config=DownloadConfig(local_files_only=local_files_only),
     )
     return cast(Iterable[SourceRow], dataset)
 
