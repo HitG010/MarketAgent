@@ -11,7 +11,9 @@ from small_models_society.resources import (
     DEFAULT_BENCHMARK_CONFIG,
     DEFAULT_INFERENCE_CONFIG,
     DEFAULT_PROMPT_PROFILES,
+    DEFAULT_TRAINING_CONFIG,
 )
+from small_models_society.training.config import load_training_config
 
 REPOSITORY_ROOT = Path(__file__).parents[1]
 
@@ -21,6 +23,7 @@ def test_packaged_configs_match_research_configs() -> None:
         (DEFAULT_BENCHMARK_CONFIG, REPOSITORY_ROOT / "configs" / "benchmark.yaml"),
         (DEFAULT_INFERENCE_CONFIG, REPOSITORY_ROOT / "configs" / "inference.yaml"),
         (DEFAULT_PROMPT_PROFILES, REPOSITORY_ROOT / "configs" / "prompt_profiles.yaml"),
+        (DEFAULT_TRAINING_CONFIG, REPOSITORY_ROOT / "configs" / "training.yaml"),
     ]
 
     for packaged, research in pairs:
@@ -38,6 +41,18 @@ def test_inference_defaults_load_outside_repository(
 
     assert config.model.model_id == "Qwen/Qwen2.5-1.5B-Instruct"
     assert len(catalog.profiles) == 5
+
+
+def test_training_defaults_load_outside_repository(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.chdir(tmp_path)
+
+    config = load_training_config(DEFAULT_TRAINING_CONFIG)
+
+    assert config.data.train_size_per_domain == 96
+    assert config.data.validation_size_per_domain == 24
 
 
 def test_inference_doctor_uses_packaged_default_outside_repository(
