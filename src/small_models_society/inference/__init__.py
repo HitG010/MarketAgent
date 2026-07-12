@@ -19,6 +19,11 @@ from small_models_society.inference.hardware import (
     detect_hardware,
     select_hardware,
 )
+from small_models_society.inference.huggingface import (
+    HuggingFaceBackend,
+    InferenceDependencyError,
+    InferenceOutOfMemoryError,
+)
 from small_models_society.inference.prompts import (
     PromptCatalog,
     PromptProfileName,
@@ -33,8 +38,11 @@ __all__ = [
     "GenerationOutput",
     "GenerationRequest",
     "HardwareReport",
+    "HuggingFaceBackend",
     "InferenceConfig",
+    "InferenceDependencyError",
     "InferenceExample",
+    "InferenceOutOfMemoryError",
     "PromptCatalog",
     "PromptProfileName",
     "RuntimeCapabilities",
