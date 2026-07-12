@@ -15,6 +15,29 @@ terms that apply to their use.
 License labels above are the metadata published by the pinned Hugging Face dataset
 cards. Consult the upstream repositories and papers before redistribution.
 
+## Phase 3 Training Splits
+
+The LoRA pilot uses the same pinned dataset revisions but only their source training
+splits. It selects exactly 120 eligible rows per domain and deterministically assigns
+96 to adapter training and 24 to internal validation with seed 42.
+
+| Domain | Configuration | Training source split | Pilot rows | Train | Validation |
+|---|---|---|---:|---:|---:|
+| Math | `openai/gsm8k` (`main`) | `train` | 120 | 96 | 24 |
+| Code | `google-research-datasets/mbpp` (`sanitized`) | `train` | 120 | 96 | 24 |
+| Logic | `allenai/ai2_arc` (`ARC-Challenge`) | `train` | 120 | 96 | 24 |
+| Knowledge | `hotpotqa/hotpot_qa` (`distractor`) | `train` | 120 | 96 | 24 |
+
+Rows are hash-ranked after normalization. Selection rejects duplicate normalized
+content, benchmark source IDs, benchmark input-content hashes, and examples whose
+fully templated prompt plus completion exceeds 512 tokens. Training and validation
+files have disjoint source IDs and content hashes. Sanitized MBPP tests and imports
+are never included in model-facing prompts or completions.
+
+Adapters are derived artifacts. Before publishing or redistributing them, review the
+source licenses and attribution/share-alike obligations, especially CC BY 4.0 and
+CC BY-SA 4.0. This repository records provenance but does not provide legal advice.
+
 ## Citations
 
 ### GSM8K

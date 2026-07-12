@@ -1,4 +1,4 @@
-# Local Model and Prompt Profiles
+# Local Model, Prompt Profiles, and LoRA Adapters
 
 ## Pinned Model
 
@@ -37,16 +37,38 @@ RAM; these are practical starting points, not guarantees.
 
 1. CUDA BF16 when the GPU reports BF16 support.
 2. CUDA FP16 on older CUDA devices.
-3. CPU FP32 when CUDA is unavailable.
+3. Apple MPS FP16 when CUDA is unavailable and MPS is available.
+4. CPU FP32 when no accelerator is available.
 
 Selection depends on the installed Torch build. The generic Windows PyPI wheel may
 be CPU-only even on an NVIDIA machine. In that case, install the CUDA-enabled wheel
 for the pinned Torch release using PyTorch's official platform selector and rerun the
 doctor. The project does not install or guess a CUDA toolkit build automatically.
 
-Explicit CPU FP16/BF16 is rejected for broad operator compatibility. Phase 2 does
-not use bitsandbytes, GGUF, ONNX, or another quantized runtime. Adding quantization
-later requires separate accuracy, portability, and reproducibility experiments.
+Explicit CPU FP16/BF16 and MPS BF16 are rejected for broad operator compatibility.
+Phase 3 does not use bitsandbytes, GGUF, ONNX, or another quantized runtime. Adding
+quantization later requires separate accuracy, portability, and reproducibility
+experiments.
+
+## LoRA Training Defaults
+
+Phase 3 keeps the 1.5B backbone frozen and trains four independent adapters. The
+default pilot uses rank 8, alpha 16, dropout 0.05, and Qwen attention projections
+`q_proj`, `k_proj`, `v_proj`, and `o_proj`. It uses completion-only loss, a 512-token
+limit, batch size 1, gradient accumulation 8, learning rate `1e-4`, and three epochs.
+The lowest validation-loss checkpoint is restored before adapter publication.
+
+Standard LoRA is used instead of QLoRA so the same configuration works on CUDA and
+Apple MPS. Full pilot training requires at least 12 GB detected accelerator memory;
+16 GB is recommended. MPS uses system memory as its unified-memory estimate and is
+still considered a beta PyTorch backend. An out-of-memory error stops the run. It
+never silently falls back to CPU; the first explicit fallback is a separately
+fingerprinted 384-token configuration.
+
+Each completed adapter contains Safetensors adapter weights rather than a copy of
+the base model. Its manifest binds the adapter to the exact base revision, training
+configuration, SFT files, prompt catalog, source IDs, package versions, hardware,
+and adapter SHA-256. Inference validates those fields before loading any adapter.
 
 ## Determinism
 
@@ -80,9 +102,8 @@ and reveals both own-domain lift and off-domain cost. Domain user formatting rem
 constant across profiles; only the system role changes. Therefore measured deltas
 primarily reflect role prompting rather than different questions or output formats.
 
-These profiles are not separate models, adapters, or trained specialists. A positive
-own-domain lift is evidence that prompting creates differentiated behavior, not that
-LoRA specialization has succeeded.
+These profiles are not separate models, adapters, or trained specialists. They remain
+the prompt-only comparator for learned LoRA adapters.
 
 ## Observed Oracle and Routing Opportunity
 
@@ -105,7 +126,8 @@ created enough differentiation to justify router training.
 
 ## Phase Boundary
 
-Phase 2 includes local deterministic inference, prompt profiles, resumable prediction
-runs, and specialization measurement. It excludes LoRA training, learned routing,
-verification, parallel collaboration, hosted-model escalation, contextual bandits,
-sequential RL, dashboards, and deployment.
+Phase 3 includes deterministic specialist training data, four LoRA adapters,
+resumable sequential training, adapter switching, and a fixed-general-prompt weight
+matrix. It reports aggregate observed oracle opportunity but excludes per-example
+router labels, router training, verification, parallel collaboration, hosted-model
+escalation, contextual bandits, sequential RL, dashboards, and deployment.

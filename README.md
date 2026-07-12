@@ -4,20 +4,24 @@ Small Models Society is a reproducible research harness for studying adaptive
 coordination among small language models. Phase 1 prepares balanced four-domain
 benchmarks, validates predictions, scores answers, executes generated Python in a
 constrained Docker container, and writes reports. Phase 2 adds pinned local model
-inference plus one general and four prompt-specialist baselines.
+inference plus one general and four prompt-specialist baselines. Phase 3 adds
+leakage-aware LoRA training and cross-domain validation for four learned adapters.
 
-The current prompt profiles all share one model. They are not trained specialists.
-Fine-tuning, learned routing, verification, escalation, RL, dashboards, and cloud
-deployment remain outside the current phase.
+Prompt profiles still share one model and remain separate from the learned adapters.
+Phase 3 measures adapter differentiation but does not create router labels or train a
+router. Verification, escalation, RL, dashboards, and cloud deployment remain outside
+the current phase.
 
 ## Prerequisites
 
-- Windows 10 or 11
+- Windows 10 or 11; Apple silicon with macOS 14+ for the MPS training path
 - Python 3.11
 - Docker Desktop using Linux containers, required only for MBPP evaluation and
   Docker integration tests
 - For local inference: approximately 8 GB system RAM or 4.5 GB NVIDIA VRAM is
   recommended; CPU inference is supported but can be slow
+- For the LoRA pilot: 16 GB NVIDIA VRAM or 16 GB Apple unified memory is
+  recommended; 12 GB is the enforced minimum accelerator-memory estimate
 
 ## Setup on Windows
 
@@ -60,9 +64,9 @@ downloading the model:
 ```
 
 Device selection is automatic: CUDA with BF16 when supported, CUDA with FP16
-otherwise, and CPU with FP32 as the fallback. The project does not silently enable
-quantization. See [docs/models.md](docs/models.md) for the pinned model and memory
-details.
+otherwise, Apple MPS with FP16, and CPU with FP32 as the fallback. The project does
+not silently enable quantization. See [docs/models.md](docs/models.md) for the pinned
+model and memory details.
 
 On Windows, the generic PyPI lock may install a CPU-only Torch wheel. If this machine
 has an NVIDIA GPU but `inference doctor` reports `cuda_available: false`, use the
@@ -134,7 +138,7 @@ Each JSONL row follows `PredictionRecord`:
 ```
 
 Gold references are absent from this contract and forbidden in nested metadata.
-Phase 2 model adapters must emit this format without receiving the benchmark
+Inference backends must emit this format without receiving the benchmark
 `reference` object.
 
 ## Generate Local Predictions
@@ -225,6 +229,63 @@ each example. Its improvement over `general` estimates the routing opportunity
 available to a future controller; it is an upper bound for these observed profiles,
 not a deployable router and not evidence of trained specialization.
 
+## Train LoRA Specialists
+
+Create a separate Python 3.11 environment containing the pinned inference and
+training stack:
+
+```powershell
+py -3.11 -m venv .venv-training
+.\.venv-training\Scripts\python.exe -m pip install --upgrade pip
+.\.venv-training\Scripts\python.exe -m pip install -r requirements-training.lock
+.\.venv-training\Scripts\python.exe -m pip install --no-build-isolation --no-deps -e .
+.\.venv-training\Scripts\python.exe -m pip check
+```
+
+Check readiness. CPU requires an explicit override and is intended only for tiny
+debug runs:
+
+```powershell
+.\.venv-training\Scripts\sms.exe training doctor
+```
+
+Prepare 96 training and 24 validation examples per domain from pinned source
+training splits. The Phase 1 benchmark and manifest must already exist at the paths
+in `configs/training.yaml`:
+
+```powershell
+.\.venv-training\Scripts\sms.exe training prepare --local-files-only
+```
+
+Train one adapter, or train all four in isolated sequential processes:
+
+```powershell
+.\.venv-training\Scripts\sms.exe training train `
+  --specialist math `
+  --local-files-only
+
+.\.venv-training\Scripts\sms.exe training train-all --local-files-only
+```
+
+Interrupted runs retain checkpoints under `artifacts/adapters/.<domain>.work` and
+require `--resume`. Existing runs are never reused or replaced implicitly.
+
+Evaluate base weights and all four adapters over the same benchmark examples with
+the same general prompt:
+
+```powershell
+.\.venv-training\Scripts\sms.exe experiment lora-matrix `
+  --benchmark data/processed/benchmark.jsonl `
+  --output-dir reports/lora-matrix `
+  --prompt-summary reports/prompt-matrix/specialization_summary.json `
+  --local-files-only
+```
+
+This produces aggregate adapter-by-domain scores, own-domain lift, off-domain
+degradation, retention, and observed oracle opportunity. It deliberately does not
+emit per-example oracle router labels. See [docs/training.md](docs/training.md) for
+the full hardware, artifact, recovery, licensing, and interpretation guide.
+
 ## Sandbox Boundary
 
 MBPP candidate code is sent as JSON over standard input to Docker. It is never
@@ -247,7 +308,7 @@ the sandbox environment.
 .\.venv\Scripts\python.exe -m ruff format --check .
 .\.venv\Scripts\python.exe -m ruff check .
 .\.venv\Scripts\python.exe -m mypy src/small_models_society
-.\.venv\Scripts\python.exe -m pytest -m "not docker and not model"
+.\.venv\Scripts\python.exe -m pytest -m "not docker and not model and not training"
 ```
 
 With Docker Desktop running:
@@ -265,8 +326,17 @@ $env:SMS_RUN_MODEL_TESTS = "1"
 Remove-Item Env:SMS_RUN_MODEL_TESTS
 ```
 
-Normal CI never downloads model weights. It uses fake model backends for inference
-logic and runs Docker sandbox tests separately.
+Run the offline one-step tiny-Qwen LoRA smoke after installing the training lock:
+
+```powershell
+$env:SMS_RUN_TRAINING_TESTS = "1"
+.\.venv-training\Scripts\python.exe -m pytest -m training -v
+Remove-Item Env:SMS_RUN_TRAINING_TESTS
+```
+
+Normal CI never downloads model weights or trains a model. It uses fake model
+backends for inference/training orchestration and runs Docker sandbox tests
+separately.
 
 ## Inference Troubleshooting
 
