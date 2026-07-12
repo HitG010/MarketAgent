@@ -57,6 +57,7 @@ testpaths = ["tests"]
 markers = [
     "docker: requires a running Docker daemon",
     "model: requires optional inference dependencies and full model weights",
+    "training: requires optional PEFT/TRL dependencies and performs model training",
 ]
 
 [tool.ruff]
