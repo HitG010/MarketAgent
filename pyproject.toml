@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "small-models-society"
-version = "0.1.0"
+version = "0.2.0"
 description = "Budget-aware evaluation harness for a society of specialist language models"
 readme = "README.md"
 requires-python = ">=3.11"
@@ -24,12 +24,22 @@ dev = [
     "types-PyYAML>=6.0,<7",
     "wheel>=0.45,<1",
 ]
+inference = [
+    "hf-xet>=1.1,<2",
+    "psutil>=6,<8",
+    "safetensors>=0.5,<1",
+    "torch>=2.6,<3",
+    "transformers>=4.57,<5",
+]
 
 [project.scripts]
 sms = "small_models_society.cli:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]
+
+[tool.setuptools.package-data]
+"small_models_society.resources" = ["*.yaml"]
 
 [tool.pytest.ini_options]
 addopts = "--strict-config --strict-markers"

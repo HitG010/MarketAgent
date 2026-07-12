@@ -8,4 +8,4 @@ from small_models_society.schemas import (
 )
 
 __all__ = ["BenchmarkExample", "Domain", "PredictionRecord", "validate_example"]
-__version__ = "0.1.0"
+__version__ = "0.2.0"
