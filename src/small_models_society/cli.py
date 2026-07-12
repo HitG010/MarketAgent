@@ -14,6 +14,11 @@ from typing import Any, cast
 from small_models_society.data import BenchmarkConfig, load_config, prepare_benchmark
 from small_models_society.data.prepare import load_benchmark
 from small_models_society.evaluation import evaluate_to_directory, write_predictions
+from small_models_society.experiments.prompt_matrix import (
+    PromptMatrixOptions,
+    inspect_prompt_matrix,
+    run_prompt_matrix,
+)
 from small_models_society.fixtures import oracle_predictions
 from small_models_society.inference.config import load_inference_config
 from small_models_society.inference.hardware import detect_hardware
@@ -216,6 +221,93 @@ def _inference_predict(arguments: argparse.Namespace) -> int:
     return 0
 
 
+def _prompt_matrix(arguments: argparse.Namespace) -> int:
+    config = load_inference_config(arguments.config)
+    if arguments.local_files_only:
+        model = config.model.model_copy(update={"local_files_only": True})
+        config = config.model_copy(update={"model": model})
+    catalog = load_prompt_catalog(arguments.prompts)
+    domains = (
+        [Domain(domain) for domain in arguments.domains] if arguments.domains else list(Domain)
+    )
+    options = PromptMatrixOptions(
+        domains=domains,
+        limit=arguments.limit,
+        resume=arguments.resume,
+        overwrite=arguments.overwrite,
+        fail_fast=arguments.fail_fast,
+    )
+    selected_examples = [
+        example for example in load_benchmark(arguments.benchmark) if example.domain in domains
+    ]
+    if arguments.limit is not None:
+        selected_examples = selected_examples[: arguments.limit]
+    if (
+        any(example.domain is Domain.CODE for example in selected_examples)
+        and not docker_available()
+    ):
+        raise RuntimeError("Docker is required when the prompt matrix includes code examples")
+    if any(
+        example.domain is Domain.CODE for example in selected_examples
+    ) and not sandbox_image_available(arguments.sandbox_image):
+        raise RuntimeError(
+            "The requested sandbox image is unavailable; run `sms doctor --build-sandbox`."
+        )
+    hardware = detect_hardware(config)
+    if not hardware.ready:
+        details = "; ".join(hardware.errors) or "unknown inference readiness error"
+        raise RuntimeError(f"inference prerequisites are not ready: {details}")
+    matrix_plan = inspect_prompt_matrix(
+        arguments.benchmark,
+        arguments.output_dir,
+        config,
+        catalog,
+        hardware,
+        options,
+    )
+    print(
+        "prompt matrix plan: "
+        + json.dumps(
+            {
+                "device": hardware.selected_device,
+                "dtype": hardware.selected_dtype,
+                "examples": len(selected_examples),
+                "model_id": config.model.model_id,
+                "profiles": len(PromptProfileName),
+                "pending": matrix_plan.pending_generation_count,
+            },
+            sort_keys=True,
+        ),
+        file=sys.stderr,
+    )
+    backend = HuggingFaceBackend(config, hardware) if matrix_plan.pending_generation_count else None
+    sandbox = DockerSandbox(
+        image=arguments.sandbox_image,
+        timeout_seconds=arguments.timeout_seconds,
+    )
+    result = run_prompt_matrix(
+        arguments.benchmark,
+        arguments.output_dir,
+        config,
+        catalog,
+        hardware,
+        backend,
+        sandbox,
+        options,
+    )
+    oracle = result.summary["prompt_profile_oracle"]
+    _print_json(
+        {
+            "oracle_score": oracle["oracle_score"],
+            "report": str(result.report_path),
+            "results": str(result.results_path),
+            "routing_opportunity": oracle["routing_opportunity"],
+            "summary": str(result.summary_path),
+        }
+    )
+    return 0
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="sms",
@@ -279,6 +371,31 @@ def build_parser() -> argparse.ArgumentParser:
     inference_predict_parser.add_argument("--local-files-only", action="store_true")
     inference_predict_parser.add_argument("--fail-fast", action="store_true")
     inference_predict_parser.set_defaults(handler=_inference_predict)
+
+    experiment_parser = commands.add_parser("experiment", help="run research experiments")
+    experiment_commands = experiment_parser.add_subparsers(dest="experiment_command", required=True)
+    matrix_parser = experiment_commands.add_parser(
+        "prompt-matrix", help="compare all prompt profiles across domains"
+    )
+    matrix_parser.add_argument("--benchmark", type=Path, required=True)
+    matrix_parser.add_argument("--output-dir", type=Path, required=True)
+    matrix_parser.add_argument("--config", type=Path, default=DEFAULT_INFERENCE_CONFIG)
+    matrix_parser.add_argument("--prompts", type=Path, default=DEFAULT_PROMPT_PROFILES)
+    matrix_parser.add_argument(
+        "--domain",
+        dest="domains",
+        action="append",
+        choices=[domain.value for domain in Domain],
+    )
+    matrix_parser.add_argument("--limit", type=int)
+    matrix_collision_group = matrix_parser.add_mutually_exclusive_group()
+    matrix_collision_group.add_argument("--resume", action="store_true")
+    matrix_collision_group.add_argument("--overwrite", action="store_true")
+    matrix_parser.add_argument("--local-files-only", action="store_true")
+    matrix_parser.add_argument("--fail-fast", action="store_true")
+    matrix_parser.add_argument("--sandbox-image", default=DEFAULT_IMAGE)
+    matrix_parser.add_argument("--timeout-seconds", type=float, default=2.0)
+    matrix_parser.set_defaults(handler=_prompt_matrix)
 
     doctor_parser = commands.add_parser("doctor", help="check local prerequisites")
     doctor_parser.add_argument("--config", type=Path, default=DEFAULT_BENCHMARK_CONFIG)

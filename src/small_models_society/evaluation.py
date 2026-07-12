@@ -360,6 +360,17 @@ def evaluate_to_directory(
 ) -> EvaluationArtifacts:
     examples = load_benchmark(benchmark_path)
     predictions = load_predictions(predictions_path)
+    return evaluate_records_to_directory(examples, predictions, output_dir, sandbox)
+
+
+def evaluate_records_to_directory(
+    examples: Sequence[BenchmarkExample],
+    predictions: Sequence[PredictionRecord],
+    output_dir: Path,
+    sandbox: CodeSandbox | None = None,
+) -> EvaluationArtifacts:
+    """Evaluate validated in-memory records and write the standard artifacts."""
+
     results = evaluate_predictions(examples, predictions, sandbox or DockerSandbox())
     summary = build_summary(results)
 
