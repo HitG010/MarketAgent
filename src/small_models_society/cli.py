@@ -14,12 +14,21 @@ from typing import Any, cast
 from small_models_society.data import BenchmarkConfig, load_config, prepare_benchmark
 from small_models_society.data.prepare import load_benchmark
 from small_models_society.evaluation import evaluate_to_directory, write_predictions
+from small_models_society.experiments.lora_matrix import (
+    LoraMatrixOptions,
+    inspect_lora_matrix,
+    run_lora_matrix,
+)
 from small_models_society.experiments.prompt_matrix import (
     PromptMatrixOptions,
     inspect_prompt_matrix,
     run_prompt_matrix,
 )
 from small_models_society.fixtures import oracle_predictions
+from small_models_society.inference.adapters import (
+    PeftHuggingFaceBackend,
+    load_adapter_catalog,
+)
 from small_models_society.inference.config import load_inference_config
 from small_models_society.inference.hardware import detect_hardware
 from small_models_society.inference.huggingface import HuggingFaceBackend
@@ -322,6 +331,109 @@ def _prompt_matrix(arguments: argparse.Namespace) -> int:
     return 0
 
 
+def _lora_matrix(arguments: argparse.Namespace) -> int:
+    inference_config = load_inference_config(arguments.config)
+    if arguments.local_files_only:
+        model = inference_config.model.model_copy(update={"local_files_only": True})
+        inference_config = inference_config.model_copy(update={"model": model})
+    training_config = load_training_config(arguments.training_config)
+    if arguments.adapter_root is not None:
+        output = training_config.output.model_copy(
+            update={"adapter_root": str(arguments.adapter_root)}
+        )
+        training_config = training_config.model_copy(update={"output": output})
+    prompts = load_prompt_catalog(arguments.prompts)
+    adapters = load_adapter_catalog(
+        Path(training_config.output.adapter_root),
+        training_config,
+        inference_config,
+    )
+    domains = (
+        [Domain(domain) for domain in arguments.domains] if arguments.domains else list(Domain)
+    )
+    options = LoraMatrixOptions(
+        domains=domains,
+        limit=arguments.limit,
+        resume=arguments.resume,
+        overwrite=arguments.overwrite,
+        fail_fast=arguments.fail_fast,
+        prompt_summary_path=arguments.prompt_summary,
+    )
+    selected_examples = [
+        example for example in load_benchmark(arguments.benchmark) if example.domain in domains
+    ]
+    if arguments.limit is not None:
+        selected_examples = selected_examples[: arguments.limit]
+    includes_code = any(example.domain is Domain.CODE for example in selected_examples)
+    if includes_code and not docker_available():
+        raise RuntimeError("Docker is required when the LoRA matrix includes code examples")
+    if includes_code and not sandbox_image_available(arguments.sandbox_image):
+        raise RuntimeError(
+            "The requested sandbox image is unavailable; run `sms doctor --build-sandbox`."
+        )
+    hardware = detect_hardware(inference_config)
+    if not hardware.ready:
+        details = "; ".join(hardware.errors) or "unknown inference readiness error"
+        raise RuntimeError(f"inference prerequisites are not ready: {details}")
+    plan = inspect_lora_matrix(
+        arguments.benchmark,
+        arguments.output_dir,
+        inference_config,
+        prompts,
+        hardware,
+        adapters,
+        options,
+    )
+    print(
+        "LoRA matrix plan: "
+        + json.dumps(
+            {
+                "device": hardware.selected_device,
+                "dtype": hardware.selected_dtype,
+                "examples": plan.example_count,
+                "pending": plan.pending_generation_count,
+                "variants": plan.variant_count,
+            },
+            sort_keys=True,
+        ),
+        file=sys.stderr,
+    )
+    backend = (
+        PeftHuggingFaceBackend(inference_config, hardware, adapters)
+        if plan.pending_generation_count
+        else None
+    )
+    result = run_lora_matrix(
+        arguments.benchmark,
+        arguments.output_dir,
+        inference_config,
+        prompts,
+        hardware,
+        adapters,
+        backend,
+        DockerSandbox(
+            image=arguments.sandbox_image,
+            timeout_seconds=arguments.timeout_seconds,
+        ),
+        options,
+    )
+    oracle = result.summary["adapter_oracle"]
+    differentiation = result.summary["aggregate_differentiation"]
+    _print_json(
+        {
+            "mean_off_domain_degradation": differentiation["mean_off_domain_degradation"],
+            "mean_own_domain_lift": differentiation["mean_own_domain_lift"],
+            "oracle_score": oracle["oracle_score"],
+            "positive_own_domain_lift_count": differentiation["positive_own_domain_lift_count"],
+            "report": str(result.report_path),
+            "results": str(result.results_path),
+            "routing_opportunity": oracle["routing_opportunity"],
+            "summary": str(result.summary_path),
+        }
+    )
+    return 0
+
+
 def _configured_training(arguments: argparse.Namespace) -> TrainingConfig:
     config = load_training_config(arguments.config)
     model_updates: dict[str, object] = {}
@@ -369,9 +481,7 @@ def _training_prepare(arguments: argparse.Namespace) -> int:
         output_dir / "sft" / "manifest.json",
     ]
     if any(path.exists() for path in expected) and not arguments.overwrite:
-        raise FileExistsError(
-            "training data artifacts already exist; use overwrite explicitly"
-        )
+        raise FileExistsError("training data artifacts already exist; use overwrite explicitly")
     catalog = load_prompt_catalog(arguments.prompts)
     modules = load_training_modules()
     tokenizer = modules.auto_tokenizer.from_pretrained(
@@ -631,16 +741,38 @@ def build_parser() -> argparse.ArgumentParser:
     matrix_parser.add_argument("--timeout-seconds", type=float, default=2.0)
     matrix_parser.set_defaults(handler=_prompt_matrix)
 
-    training_parser = commands.add_parser("training", help="prepare and train LoRA specialists")
-    training_commands = training_parser.add_subparsers(
-        dest="training_command", required=True
+    lora_matrix_parser = experiment_commands.add_parser(
+        "lora-matrix", help="compare base and learned LoRA weights across domains"
     )
+    lora_matrix_parser.add_argument("--benchmark", type=Path, required=True)
+    lora_matrix_parser.add_argument("--output-dir", type=Path, required=True)
+    lora_matrix_parser.add_argument("--config", type=Path, default=DEFAULT_INFERENCE_CONFIG)
+    lora_matrix_parser.add_argument("--training-config", type=Path, default=DEFAULT_TRAINING_CONFIG)
+    lora_matrix_parser.add_argument("--prompts", type=Path, default=DEFAULT_PROMPT_PROFILES)
+    lora_matrix_parser.add_argument("--adapter-root", type=Path)
+    lora_matrix_parser.add_argument("--prompt-summary", type=Path)
+    lora_matrix_parser.add_argument(
+        "--domain",
+        dest="domains",
+        action="append",
+        choices=[domain.value for domain in Domain],
+    )
+    lora_matrix_parser.add_argument("--limit", type=int)
+    lora_collision_group = lora_matrix_parser.add_mutually_exclusive_group()
+    lora_collision_group.add_argument("--resume", action="store_true")
+    lora_collision_group.add_argument("--overwrite", action="store_true")
+    lora_matrix_parser.add_argument("--local-files-only", action="store_true")
+    lora_matrix_parser.add_argument("--fail-fast", action="store_true")
+    lora_matrix_parser.add_argument("--sandbox-image", default=DEFAULT_IMAGE)
+    lora_matrix_parser.add_argument("--timeout-seconds", type=float, default=2.0)
+    lora_matrix_parser.set_defaults(handler=_lora_matrix)
+
+    training_parser = commands.add_parser("training", help="prepare and train LoRA specialists")
+    training_commands = training_parser.add_subparsers(dest="training_command", required=True)
     training_doctor_parser = training_commands.add_parser(
         "doctor", help="check LoRA training prerequisites"
     )
-    training_doctor_parser.add_argument(
-        "--config", type=Path, default=DEFAULT_TRAINING_CONFIG
-    )
+    training_doctor_parser.add_argument("--config", type=Path, default=DEFAULT_TRAINING_CONFIG)
     training_doctor_parser.add_argument("--adapter-root", type=Path)
     training_doctor_parser.add_argument("--local-files-only", action="store_true")
     training_doctor_parser.add_argument("--allow-cpu", action="store_true")
@@ -649,12 +781,8 @@ def build_parser() -> argparse.ArgumentParser:
     training_prepare_parser = training_commands.add_parser(
         "prepare", help="prepare leakage-free specialist SFT data"
     )
-    training_prepare_parser.add_argument(
-        "--config", type=Path, default=DEFAULT_TRAINING_CONFIG
-    )
-    training_prepare_parser.add_argument(
-        "--prompts", type=Path, default=DEFAULT_PROMPT_PROFILES
-    )
+    training_prepare_parser.add_argument("--config", type=Path, default=DEFAULT_TRAINING_CONFIG)
+    training_prepare_parser.add_argument("--prompts", type=Path, default=DEFAULT_PROMPT_PROFILES)
     training_prepare_parser.add_argument("--output-dir", type=Path)
     training_prepare_parser.add_argument("--benchmark", type=Path)
     training_prepare_parser.add_argument("--benchmark-manifest", type=Path)
@@ -662,9 +790,7 @@ def build_parser() -> argparse.ArgumentParser:
     training_prepare_parser.add_argument("--overwrite", action="store_true")
     training_prepare_parser.set_defaults(handler=_training_prepare)
 
-    training_train_parser = training_commands.add_parser(
-        "train", help="train one LoRA specialist"
-    )
+    training_train_parser = training_commands.add_parser("train", help="train one LoRA specialist")
     _add_training_run_arguments(training_train_parser)
     training_train_parser.add_argument(
         "--specialist", choices=[domain.value for domain in Domain], required=True
