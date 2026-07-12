@@ -36,6 +36,7 @@ from small_models_society.resources import (
     DEFAULT_BENCHMARK_CONFIG,
     DEFAULT_INFERENCE_CONFIG,
     DEFAULT_PROMPT_PROFILES,
+    DEFAULT_TRAINING_CONFIG,
 )
 from small_models_society.sandbox import (
     DEFAULT_IMAGE,
@@ -45,6 +46,19 @@ from small_models_society.sandbox import (
     sandbox_image_available,
 )
 from small_models_society.schemas import Domain
+from small_models_society.training.config import TrainingConfig, load_training_config
+from small_models_society.training.formatting import (
+    build_sft_eligibility_filter,
+    prepare_sft_data,
+)
+from small_models_society.training.hardware import detect_training_hardware
+from small_models_society.training.prepare import prepare_training_data
+from small_models_society.training.runner import (
+    AdapterRunOptions,
+    inspect_adapter_training,
+    run_adapter_training,
+)
+from small_models_society.training.trainer import LoraTrainerBackend, load_training_modules
 
 CommandHandler = Callable[[argparse.Namespace], int]
 
@@ -308,6 +322,226 @@ def _prompt_matrix(arguments: argparse.Namespace) -> int:
     return 0
 
 
+def _configured_training(arguments: argparse.Namespace) -> TrainingConfig:
+    config = load_training_config(arguments.config)
+    model_updates: dict[str, object] = {}
+    if getattr(arguments, "local_files_only", False):
+        model_updates["local_files_only"] = True
+    data_updates: dict[str, object] = {}
+    output_dir = getattr(arguments, "output_dir", None)
+    if output_dir is not None:
+        data_updates["output_dir"] = str(output_dir)
+    benchmark = getattr(arguments, "benchmark", None)
+    if benchmark is not None:
+        data_updates["benchmark_path"] = str(benchmark)
+    benchmark_manifest = getattr(arguments, "benchmark_manifest", None)
+    if benchmark_manifest is not None:
+        data_updates["benchmark_manifest_path"] = str(benchmark_manifest)
+    output_updates: dict[str, object] = {}
+    adapter_root = getattr(arguments, "adapter_root", None)
+    if adapter_root is not None:
+        output_updates["adapter_root"] = str(adapter_root)
+    return config.model_copy(
+        update={
+            "model": config.model.model_copy(update=model_updates),
+            "data": config.data.model_copy(update=data_updates),
+            "output": config.output.model_copy(update=output_updates),
+        }
+    )
+
+
+def _training_doctor(arguments: argparse.Namespace) -> int:
+    config = _configured_training(arguments)
+    report = detect_training_hardware(config, allow_cpu=arguments.allow_cpu)
+    _print_json(report.model_dump(mode="json"))
+    return 0 if report.ready else 1
+
+
+def _training_prepare(arguments: argparse.Namespace) -> int:
+    config = _configured_training(arguments)
+    output_dir = Path(config.data.output_dir)
+    expected = [
+        output_dir / "train.jsonl",
+        output_dir / "validation.jsonl",
+        output_dir / "manifest.json",
+        output_dir / "sft" / "train.jsonl",
+        output_dir / "sft" / "validation.jsonl",
+        output_dir / "sft" / "manifest.json",
+    ]
+    if any(path.exists() for path in expected) and not arguments.overwrite:
+        raise FileExistsError(
+            "training data artifacts already exist; use overwrite explicitly"
+        )
+    catalog = load_prompt_catalog(arguments.prompts)
+    modules = load_training_modules()
+    tokenizer = modules.auto_tokenizer.from_pretrained(
+        config.model.model_id,
+        revision=config.model.revision,
+        trust_remote_code=config.model.trust_remote_code,
+        local_files_only=config.model.local_files_only,
+    )
+    source = prepare_training_data(
+        config,
+        output_dir,
+        eligibility_filter=build_sft_eligibility_filter(
+            catalog,
+            tokenizer,
+            config.data.max_length,
+        ),
+    )
+    sft = prepare_sft_data(
+        config,
+        catalog,
+        tokenizer,
+        source.train_path,
+        source.validation_path,
+        source.manifest_path,
+        output_dir / "sft",
+    )
+    _print_json(
+        {
+            "source_manifest": str(source.manifest_path),
+            "sft_manifest": str(sft.manifest_path),
+            "train": str(sft.train_path),
+            "validation": str(sft.validation_path),
+            "train_row_count": sft.train_row_count,
+            "validation_row_count": sft.validation_row_count,
+            "train_sha256": sft.train_sha256,
+            "validation_sha256": sft.validation_sha256,
+        }
+    )
+    return 0
+
+
+def _sft_paths(
+    arguments: argparse.Namespace,
+    config: TrainingConfig,
+) -> tuple[Path, Path, Path]:
+    default_root = Path(config.data.output_dir) / "sft"
+    return (
+        arguments.sft_train or default_root / "train.jsonl",
+        arguments.sft_validation or default_root / "validation.jsonl",
+        arguments.sft_manifest or default_root / "manifest.json",
+    )
+
+
+def _training_train(arguments: argparse.Namespace) -> int:
+    config = _configured_training(arguments)
+    specialist = Domain(arguments.specialist)
+    options = AdapterRunOptions(
+        specialist=specialist,
+        resume=arguments.resume,
+        overwrite=arguments.overwrite,
+    )
+    train_path, validation_path, manifest_path = _sft_paths(arguments, config)
+    hardware = detect_training_hardware(config, allow_cpu=arguments.allow_cpu)
+    if not hardware.ready:
+        details = "; ".join(hardware.errors) or "unknown training readiness error"
+        raise RuntimeError(f"training prerequisites are not ready: {details}")
+    plan = inspect_adapter_training(
+        config,
+        hardware,
+        train_path,
+        validation_path,
+        manifest_path,
+        options,
+    )
+    print(
+        "training plan: "
+        + json.dumps(
+            {
+                "device": hardware.selected_device,
+                "dtype": hardware.selected_dtype,
+                "pending": plan.pending,
+                "specialist": specialist.value,
+                "train_rows": plan.train_row_count,
+                "validation_rows": plan.validation_row_count,
+            },
+            sort_keys=True,
+        ),
+        file=sys.stderr,
+    )
+    backend = LoraTrainerBackend(config, hardware) if plan.pending else None
+    result = run_adapter_training(
+        config,
+        hardware,
+        train_path,
+        validation_path,
+        manifest_path,
+        backend,
+        options,
+    )
+    _print_json(
+        {
+            "adapter_dir": str(result.adapter_dir),
+            "adapter_sha256": result.manifest.adapter_sha256,
+            "device": hardware.selected_device,
+            "dtype": hardware.selected_dtype,
+            "duration_seconds": result.manifest.duration_seconds,
+            "eval_metrics": result.manifest.eval_metrics,
+            "manifest": str(result.manifest_path),
+            "run_fingerprint": result.manifest.run_fingerprint,
+            "specialist": specialist.value,
+            "status": result.manifest.status,
+            "train_metrics": result.manifest.train_metrics,
+            "trainable_parameters": result.manifest.trainable_parameters,
+        }
+    )
+    return 0
+
+
+def _training_train_all(arguments: argparse.Namespace) -> int:
+    completed: list[str] = []
+    for domain in Domain:
+        command = [
+            sys.executable,
+            "-m",
+            "small_models_society.cli",
+            "training",
+            "train",
+            "--config",
+            str(arguments.config),
+            "--specialist",
+            domain.value,
+        ]
+        path_arguments = (
+            ("--sft-train", arguments.sft_train),
+            ("--sft-validation", arguments.sft_validation),
+            ("--sft-manifest", arguments.sft_manifest),
+            ("--adapter-root", arguments.adapter_root),
+        )
+        for flag, value in path_arguments:
+            if value is not None:
+                command.extend((flag, str(value)))
+        for flag, enabled in (
+            ("--resume", arguments.resume),
+            ("--overwrite", arguments.overwrite),
+            ("--local-files-only", arguments.local_files_only),
+            ("--allow-cpu", arguments.allow_cpu),
+        ):
+            if enabled:
+                command.append(flag)
+        process = subprocess.run(command, check=False)
+        if process.returncode != 0:
+            return int(process.returncode)
+        completed.append(domain.value)
+    _print_json({"completed_specialists": completed, "status": "completed"})
+    return 0
+
+
+def _add_training_run_arguments(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument("--config", type=Path, default=DEFAULT_TRAINING_CONFIG)
+    parser.add_argument("--sft-train", type=Path)
+    parser.add_argument("--sft-validation", type=Path)
+    parser.add_argument("--sft-manifest", type=Path)
+    parser.add_argument("--adapter-root", type=Path)
+    collision_group = parser.add_mutually_exclusive_group()
+    collision_group.add_argument("--resume", action="store_true")
+    collision_group.add_argument("--overwrite", action="store_true")
+    parser.add_argument("--local-files-only", action="store_true")
+    parser.add_argument("--allow-cpu", action="store_true")
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="sms",
@@ -396,6 +630,52 @@ def build_parser() -> argparse.ArgumentParser:
     matrix_parser.add_argument("--sandbox-image", default=DEFAULT_IMAGE)
     matrix_parser.add_argument("--timeout-seconds", type=float, default=2.0)
     matrix_parser.set_defaults(handler=_prompt_matrix)
+
+    training_parser = commands.add_parser("training", help="prepare and train LoRA specialists")
+    training_commands = training_parser.add_subparsers(
+        dest="training_command", required=True
+    )
+    training_doctor_parser = training_commands.add_parser(
+        "doctor", help="check LoRA training prerequisites"
+    )
+    training_doctor_parser.add_argument(
+        "--config", type=Path, default=DEFAULT_TRAINING_CONFIG
+    )
+    training_doctor_parser.add_argument("--adapter-root", type=Path)
+    training_doctor_parser.add_argument("--local-files-only", action="store_true")
+    training_doctor_parser.add_argument("--allow-cpu", action="store_true")
+    training_doctor_parser.set_defaults(handler=_training_doctor)
+
+    training_prepare_parser = training_commands.add_parser(
+        "prepare", help="prepare leakage-free specialist SFT data"
+    )
+    training_prepare_parser.add_argument(
+        "--config", type=Path, default=DEFAULT_TRAINING_CONFIG
+    )
+    training_prepare_parser.add_argument(
+        "--prompts", type=Path, default=DEFAULT_PROMPT_PROFILES
+    )
+    training_prepare_parser.add_argument("--output-dir", type=Path)
+    training_prepare_parser.add_argument("--benchmark", type=Path)
+    training_prepare_parser.add_argument("--benchmark-manifest", type=Path)
+    training_prepare_parser.add_argument("--local-files-only", action="store_true")
+    training_prepare_parser.add_argument("--overwrite", action="store_true")
+    training_prepare_parser.set_defaults(handler=_training_prepare)
+
+    training_train_parser = training_commands.add_parser(
+        "train", help="train one LoRA specialist"
+    )
+    _add_training_run_arguments(training_train_parser)
+    training_train_parser.add_argument(
+        "--specialist", choices=[domain.value for domain in Domain], required=True
+    )
+    training_train_parser.set_defaults(handler=_training_train)
+
+    training_all_parser = training_commands.add_parser(
+        "train-all", help="train all specialists in sequential processes"
+    )
+    _add_training_run_arguments(training_all_parser)
+    training_all_parser.set_defaults(handler=_training_train_all)
 
     doctor_parser = commands.add_parser("doctor", help="check local prerequisites")
     doctor_parser.add_argument("--config", type=Path, default=DEFAULT_BENCHMARK_CONFIG)
