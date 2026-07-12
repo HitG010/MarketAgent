@@ -6,6 +6,7 @@ import argparse
 import json
 import subprocess
 import sys
+from collections import Counter
 from collections.abc import Callable, Sequence
 from pathlib import Path
 from typing import Any, cast
@@ -16,6 +17,21 @@ from small_models_society.evaluation import evaluate_to_directory, write_predict
 from small_models_society.fixtures import oracle_predictions
 from small_models_society.inference.config import load_inference_config
 from small_models_society.inference.hardware import detect_hardware
+from small_models_society.inference.huggingface import HuggingFaceBackend
+from small_models_society.inference.prompts import (
+    PromptProfileName,
+    load_prompt_catalog,
+)
+from small_models_society.inference.runner import (
+    PredictionRunOptions,
+    inspect_prediction_run,
+    run_predictions,
+)
+from small_models_society.resources import (
+    DEFAULT_BENCHMARK_CONFIG,
+    DEFAULT_INFERENCE_CONFIG,
+    DEFAULT_PROMPT_PROFILES,
+)
 from small_models_society.sandbox import (
     DEFAULT_IMAGE,
     DockerSandbox,
@@ -23,6 +39,7 @@ from small_models_society.sandbox import (
     docker_available,
     sandbox_image_available,
 )
+from small_models_society.schemas import Domain
 
 CommandHandler = Callable[[argparse.Namespace], int]
 
@@ -128,6 +145,77 @@ def _inference_doctor(arguments: argparse.Namespace) -> int:
     return 0 if report.ready else 1
 
 
+def _inference_predict(arguments: argparse.Namespace) -> int:
+    config = load_inference_config(arguments.config)
+    if arguments.local_files_only:
+        model = config.model.model_copy(update={"local_files_only": True})
+        config = config.model_copy(update={"model": model})
+    catalog = load_prompt_catalog(arguments.prompts)
+    profile = PromptProfileName(arguments.profile)
+    domains = (
+        [Domain(domain) for domain in arguments.domains] if arguments.domains else list(Domain)
+    )
+    options = PredictionRunOptions(
+        profile=profile,
+        domains=domains,
+        limit=arguments.limit,
+        resume=arguments.resume,
+        overwrite=arguments.overwrite,
+        fail_fast=arguments.fail_fast,
+    )
+    hardware = detect_hardware(config)
+    if not hardware.ready:
+        details = "; ".join(hardware.errors) or "unknown inference readiness error"
+        raise RuntimeError(f"inference prerequisites are not ready: {details}")
+    prediction_plan = inspect_prediction_run(
+        arguments.benchmark,
+        arguments.output,
+        config,
+        catalog,
+        hardware,
+        options,
+    )
+    plan = {
+        "device": hardware.selected_device,
+        "dtype": hardware.selected_dtype,
+        "model_id": config.model.model_id,
+        "profile": profile.value,
+        "pending": prediction_plan.pending_count,
+    }
+    print(f"inference plan: {json.dumps(plan, sort_keys=True)}", file=sys.stderr)
+    backend = HuggingFaceBackend(config, hardware) if prediction_plan.pending_count else None
+    result = run_predictions(
+        arguments.benchmark,
+        arguments.output,
+        config,
+        catalog,
+        hardware,
+        backend,
+        options,
+    )
+    status_counts = Counter(prediction.status.value for prediction in result.predictions)
+    total_latency_ms = sum(prediction.latency_ms for prediction in result.predictions)
+    prediction_count = len(result.predictions)
+    _print_json(
+        {
+            "completion_tokens": sum(
+                prediction.completion_tokens for prediction in result.predictions
+            ),
+            "device": hardware.selected_device,
+            "dtype": hardware.selected_dtype,
+            "manifest": str(result.manifest_path),
+            "mean_latency_ms": (total_latency_ms / prediction_count if prediction_count else 0.0),
+            "output": str(result.output_path),
+            "prediction_count": prediction_count,
+            "profile": profile.value,
+            "prompt_tokens": sum(prediction.prompt_tokens for prediction in result.predictions),
+            "run_fingerprint": result.manifest.run_fingerprint,
+            "status_counts": dict(sorted(status_counts.items())),
+        }
+    )
+    return 0
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="sms",
@@ -138,7 +226,7 @@ def build_parser() -> argparse.ArgumentParser:
     data_parser = commands.add_parser("data", help="prepare benchmark data")
     data_commands = data_parser.add_subparsers(dest="data_command", required=True)
     prepare_parser = data_commands.add_parser("prepare", help="download and normalize data")
-    prepare_parser.add_argument("--config", type=Path, default=Path("configs/benchmark.yaml"))
+    prepare_parser.add_argument("--config", type=Path, default=DEFAULT_BENCHMARK_CONFIG)
     prepare_parser.add_argument("--output-dir", type=Path)
     prepare_parser.add_argument("--sample-per-domain", type=int)
     prepare_parser.set_defaults(handler=_prepare_data)
@@ -164,13 +252,36 @@ def build_parser() -> argparse.ArgumentParser:
     inference_doctor_parser = inference_commands.add_parser(
         "doctor", help="check local model prerequisites"
     )
-    inference_doctor_parser.add_argument(
-        "--config", type=Path, default=Path("configs/inference.yaml")
-    )
+    inference_doctor_parser.add_argument("--config", type=Path, default=DEFAULT_INFERENCE_CONFIG)
     inference_doctor_parser.set_defaults(handler=_inference_doctor)
+    inference_predict_parser = inference_commands.add_parser(
+        "predict", help="generate local model predictions"
+    )
+    inference_predict_parser.add_argument("--benchmark", type=Path, required=True)
+    inference_predict_parser.add_argument("--output", type=Path, required=True)
+    inference_predict_parser.add_argument("--config", type=Path, default=DEFAULT_INFERENCE_CONFIG)
+    inference_predict_parser.add_argument("--prompts", type=Path, default=DEFAULT_PROMPT_PROFILES)
+    inference_predict_parser.add_argument(
+        "--profile",
+        choices=[profile.value for profile in PromptProfileName],
+        default=PromptProfileName.GENERAL.value,
+    )
+    inference_predict_parser.add_argument(
+        "--domain",
+        dest="domains",
+        action="append",
+        choices=[domain.value for domain in Domain],
+    )
+    inference_predict_parser.add_argument("--limit", type=int)
+    collision_group = inference_predict_parser.add_mutually_exclusive_group()
+    collision_group.add_argument("--resume", action="store_true")
+    collision_group.add_argument("--overwrite", action="store_true")
+    inference_predict_parser.add_argument("--local-files-only", action="store_true")
+    inference_predict_parser.add_argument("--fail-fast", action="store_true")
+    inference_predict_parser.set_defaults(handler=_inference_predict)
 
     doctor_parser = commands.add_parser("doctor", help="check local prerequisites")
-    doctor_parser.add_argument("--config", type=Path, default=Path("configs/benchmark.yaml"))
+    doctor_parser.add_argument("--config", type=Path, default=DEFAULT_BENCHMARK_CONFIG)
     doctor_parser.add_argument("--sandbox-image", default=DEFAULT_IMAGE)
     doctor_parser.add_argument("--build-sandbox", action="store_true")
     doctor_parser.set_defaults(handler=_doctor)
