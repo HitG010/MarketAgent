@@ -1,13 +1,14 @@
 # Small Models Society
 
-Phase 1 is a reproducible, four-domain benchmark harness for studying adaptive
-coordination among small language models. It prepares balanced benchmark data,
-validates model-independent prediction records, scores each domain, runs generated
-Python only in a constrained Docker container, and writes machine-readable and
-Markdown reports.
+Small Models Society is a reproducible research harness for studying adaptive
+coordination among small language models. Phase 1 prepares balanced four-domain
+benchmarks, validates predictions, scores answers, executes generated Python in a
+constrained Docker container, and writes reports. Phase 2 adds pinned local model
+inference plus one general and four prompt-specialist baselines.
 
-This phase intentionally contains no model inference, fine-tuning, routing, RL,
-dashboard, or cloud deployment.
+The current prompt profiles all share one model. They are not trained specialists.
+Fine-tuning, learned routing, verification, escalation, RL, dashboards, and cloud
+deployment remain outside the current phase.
 
 ## Prerequisites
 
@@ -15,6 +16,8 @@ dashboard, or cloud deployment.
 - Python 3.11
 - Docker Desktop using Linux containers, required only for MBPP evaluation and
   Docker integration tests
+- For local inference: approximately 8 GB system RAM or 4.5 GB NVIDIA VRAM is
+  recommended; CPU inference is supported but can be slow
 
 ## Setup on Windows
 
@@ -35,6 +38,38 @@ Start Docker Desktop, then build and verify the sandbox:
 
 `doctor` returns a nonzero exit code until Python, the benchmark configuration,
 the Docker daemon, and the sandbox image are ready.
+
+## Local Inference Setup
+
+Keep the lightweight Phase 1 environment and model environment separate. The
+inference lock includes all baseline, development, PyTorch, Transformers,
+Safetensors, and hardware-diagnostic dependencies:
+
+```powershell
+py -3.11 -m venv .venv-inference
+.\.venv-inference\Scripts\python.exe -m pip install --upgrade pip
+.\.venv-inference\Scripts\python.exe -m pip install -r requirements-inference.lock
+.\.venv-inference\Scripts\python.exe -m pip install --no-build-isolation --no-deps -e .
+```
+
+Check package, device, dtype, memory, and model-cache readiness without loading or
+downloading the model:
+
+```powershell
+.\.venv-inference\Scripts\sms.exe inference doctor
+```
+
+Device selection is automatic: CUDA with BF16 when supported, CUDA with FP16
+otherwise, and CPU with FP32 as the fallback. The project does not silently enable
+quantization. See [docs/models.md](docs/models.md) for the pinned model and memory
+details.
+
+On Windows, the generic PyPI lock may install a CPU-only Torch wheel. If this machine
+has an NVIDIA GPU but `inference doctor` reports `cuda_available: false`, use the
+[official PyTorch installer](https://pytorch.org/get-started/locally/) to replace
+Torch with the CUDA-enabled build for the pinned Torch release, then rerun
+`python -m pip check` and `sms inference doctor`. Do not infer CUDA support only from
+the presence of an NVIDIA driver.
 
 ## Prepare Data
 
@@ -102,6 +137,94 @@ Gold references are absent from this contract and forbidden in nested metadata.
 Phase 2 model adapters must emit this format without receiving the benchmark
 `reference` object.
 
+## Generate Local Predictions
+
+Start with the deterministic 20-row benchmark before attempting the default
+400-row run:
+
+```powershell
+.\.venv\Scripts\sms.exe data prepare `
+  --sample-per-domain 5 `
+  --output-dir data/processed/five-per-domain
+```
+
+Run the general prompt profile. The first online run downloads the pinned model
+snapshot to the Hugging Face cache:
+
+```powershell
+.\.venv-inference\Scripts\sms.exe inference predict `
+  --benchmark data/processed/five-per-domain/benchmark.jsonl `
+  --output data/processed/predictions/general.jsonl `
+  --profile general
+```
+
+Available profiles are `general`, `math`, `code`, `logic`, and `knowledge`.
+`--domain` may be repeated, and `--limit` applies after domain filtering:
+
+```powershell
+.\.venv-inference\Scripts\sms.exe inference predict `
+  --benchmark data/processed/five-per-domain/benchmark.jsonl `
+  --output data/processed/predictions/math-smoke.jsonl `
+  --profile math `
+  --domain math `
+  --limit 2
+```
+
+Prediction output is collision-safe. Existing artifacts require one explicit policy:
+
+```powershell
+# Continue only when benchmark, model, prompts, filters, packages, and hardware match.
+.\.venv-inference\Scripts\sms.exe inference predict <same arguments> --resume
+
+# Discard the old run and start again.
+.\.venv-inference\Scripts\sms.exe inference predict <same arguments> --overwrite
+```
+
+`--local-files-only` prevents network access and fails if the exact pinned snapshot
+is not cached. `--fail-fast` stops at the first recoverable per-example error;
+without it, failures become explicit `error` prediction rows and the run continues.
+The inference lock includes Hugging Face's Xet transfer client for the multi-gigabyte
+weight file. A broken first transfer can be retried; the cache remains outside Git.
+
+Each prediction file has a sibling `.manifest.json` containing benchmark, model,
+prompt, configuration, package, filter, device, and dtype fingerprints. Checkpoints
+are atomically rewritten after the configured number of examples. An interrupted run
+therefore leaves valid ordered JSONL and can be resumed safely.
+
+Evaluate predictions with the unchanged Phase 1 scorer:
+
+```powershell
+.\.venv-inference\Scripts\sms.exe evaluate `
+  --benchmark data/processed/five-per-domain/benchmark.jsonl `
+  --predictions data/processed/predictions/general.jsonl `
+  --output-dir reports/general
+```
+
+Docker must be running when the selected benchmark includes code examples.
+
+## Prompt Specialization Matrix
+
+Run every profile over the same selected examples while loading the model only once:
+
+```powershell
+.\.venv-inference\Scripts\sms.exe experiment prompt-matrix `
+  --benchmark data/processed/five-per-domain/benchmark.jsonl `
+  --output-dir reports/prompt-matrix
+```
+
+The output contains one prediction manifest and standard evaluation directory per
+profile, plus:
+
+- `profile_results.jsonl`: one profile/example score per line
+- `specialization_summary.json`: profile-by-domain scores, general deltas,
+  own-domain lift, off-domain degradation, and observed oracle opportunity
+- `specialization_report.md`: compact human-readable tables
+
+The observed prompt-profile oracle chooses the best measured profile separately for
+each example. Its improvement over `general` estimates the routing opportunity
+available to a future controller; it is an upper bound for these observed profiles,
+not a deployable router and not evidence of trained specialization.
+
 ## Sandbox Boundary
 
 MBPP candidate code is sent as JSON over standard input to Docker. It is never
@@ -124,7 +247,7 @@ the sandbox environment.
 .\.venv\Scripts\python.exe -m ruff format --check .
 .\.venv\Scripts\python.exe -m ruff check .
 .\.venv\Scripts\python.exe -m mypy src/small_models_society
-.\.venv\Scripts\python.exe -m pytest -m "not docker"
+.\.venv\Scripts\python.exe -m pytest -m "not docker and not model"
 ```
 
 With Docker Desktop running:
@@ -132,3 +255,31 @@ With Docker Desktop running:
 ```powershell
 .\.venv\Scripts\python.exe -m pytest -m docker
 ```
+
+Run the full-weight model smoke manually after installing inference dependencies,
+starting Docker, and allowing the pinned model download:
+
+```powershell
+$env:SMS_RUN_MODEL_TESTS = "1"
+.\.venv-inference\Scripts\python.exe -m pytest -m model -v
+Remove-Item Env:SMS_RUN_MODEL_TESTS
+```
+
+Normal CI never downloads model weights. It uses fake model backends for inference
+logic and runs Docker sandbox tests separately.
+
+## Inference Troubleshooting
+
+- **Missing Torch/Transformers:** install `requirements-inference.lock` in the
+  Python 3.11 inference environment and rerun `sms inference doctor`.
+- **Model not cached:** allow one online run, or remove `--local-files-only`.
+- **CUDA requested but unavailable:** use `device: auto` or `cpu` in
+  `configs/inference.yaml` and inspect the doctor output.
+- **Out of memory:** reduce `max_input_tokens` or per-domain `max_new_tokens`, or
+  use a machine with more RAM/VRAM. Phase 2 deliberately excludes quantization.
+- **Slow CPU inference:** begin with `--limit 1` or the 20-row benchmark. A full
+  five-profile matrix performs five generations per example.
+- **Code evaluation fails before scoring:** start Docker Desktop, then run
+  `sms doctor --build-sandbox`.
+- **Resume mismatch:** use the original model, prompt, filters, hardware, and
+  package stack, or choose `--overwrite` for a new run.
