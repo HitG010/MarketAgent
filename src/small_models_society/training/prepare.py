@@ -59,9 +59,7 @@ def normalized_content_sha256(example: BenchmarkExample) -> str:
 def qualified_source_id(source: DatasetSource, example_id: str) -> str:
     """Qualify split-local IDs so identities remain unambiguous across source splits."""
 
-    return "::".join(
-        (source.dataset, source.config, source.split, source.revision, example_id)
-    )
+    return "::".join((source.dataset, source.config, source.split, source.revision, example_id))
 
 
 def _require_mapping(value: object, description: str) -> Mapping[str, Any]:
@@ -73,10 +71,7 @@ def _require_mapping(value: object, description: str) -> Mapping[str, Any]:
 def _manifest_source(value: object, domain: Domain) -> DatasetSource:
     source = _require_mapping(value, f"benchmark source {domain.value}")
     try:
-        selected = {
-            key: source[key]
-            for key in ("dataset", "config", "split", "revision")
-        }
+        selected = {key: source[key] for key in ("dataset", "config", "split", "revision")}
     except KeyError as error:
         raise ValueError(f"benchmark source {domain.value} is incomplete") from error
     return DatasetSource.model_validate(selected)
@@ -103,8 +98,7 @@ def load_benchmark_leakage_index(
 
     manifest_sources = _require_mapping(manifest.get("sources"), "benchmark sources")
     sources = {
-        domain: _manifest_source(manifest_sources.get(domain.value), domain)
-        for domain in Domain
+        domain: _manifest_source(manifest_sources.get(domain.value), domain) for domain in Domain
     }
     examples = load_benchmark(benchmark_path)
     return BenchmarkLeakageIndex(
@@ -169,7 +163,12 @@ def prepare_training_data(
         eligible: list[tuple[str, BenchmarkExample, str]] = []
         seen_content: set[str] = set()
         exclusions: Counter[str] = Counter()
+        requested = config.data.pilot_size_per_domain
+        scanned_rows = 0
         for source_id, example in ranked:
+            if eligibility_filter is not None and len(eligible) >= requested:
+                break
+            scanned_rows += 1
             content_sha256 = normalized_content_sha256(example)
             if content_sha256 in seen_content:
                 exclusions["duplicate_content"] += 1
@@ -186,7 +185,6 @@ def prepare_training_data(
                 continue
             eligible.append((source_id, example, content_sha256))
 
-        requested = config.data.pilot_size_per_domain
         if len(eligible) < requested:
             raise ValueError(
                 f"{domain.value} has {len(eligible)} eligible rows after exclusions; "
@@ -213,6 +211,7 @@ def prepare_training_data(
         source_statistics[domain.value] = {
             **source.model_dump(mode="json"),
             "available_rows": len(normalized),
+            "scanned_rows": scanned_rows,
             "eligible_rows": len(eligible),
             "selected_rows": len(selected),
             "train_rows": config.data.train_size_per_domain,
@@ -222,9 +221,7 @@ def prepare_training_data(
 
     records.sort(key=lambda record: (record.domain.value, record.source_id))
     train_records = [record for record in records if record.split is TrainingSplit.TRAIN]
-    validation_records = [
-        record for record in records if record.split is TrainingSplit.VALIDATION
-    ]
+    validation_records = [record for record in records if record.split is TrainingSplit.VALIDATION]
     train_bytes = _records_bytes(train_records)
     validation_bytes = _records_bytes(validation_records)
     train_sha256 = sha256_bytes(train_bytes)

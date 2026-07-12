@@ -134,12 +134,12 @@ def test_prepares_reproducible_balanced_384_96_split(tmp_path: Path) -> None:
     assert {record.content_sha256 for record in train}.isdisjoint(
         record.content_sha256 for record in validation
     )
-    assert {
-        domain: sum(record.domain is domain for record in train) for domain in Domain
-    } == {domain: 96 for domain in Domain}
-    assert {
-        domain: sum(record.domain is domain for record in validation) for domain in Domain
-    } == {domain: 24 for domain in Domain}
+    assert {domain: sum(record.domain is domain for record in train) for domain in Domain} == {
+        domain: 96 for domain in Domain
+    }
+    assert {domain: sum(record.domain is domain for record in validation) for domain in Domain} == {
+        domain: 24 for domain in Domain
+    }
 
     manifest = json.loads(first.manifest_path.read_text(encoding="utf-8"))
     assert manifest["row_count"] == 480
@@ -176,14 +176,32 @@ def test_filters_benchmark_content_before_selection(tmp_path: Path) -> None:
 
 def test_applies_eligibility_before_selection(tmp_path: Path) -> None:
     config = _training_config(pilot_size=3, train_size=2, validation_size=1)
+    baseline = prepare_training_data(
+        config,
+        tmp_path / "baseline",
+        lambda source: _rows(_domain_for_source(source), 8),
+        leakage_index=_empty_leakage(),
+    )
+    baseline_records = load_source_training_records(
+        baseline.train_path
+    ) + load_source_training_records(baseline.validation_path)
+    blocked_id = next(
+        record.example.id for record in baseline_records if record.domain is Domain.MATH
+    )
     prepared = prepare_training_data(
         config,
-        tmp_path,
+        tmp_path / "filtered",
         lambda source: _rows(_domain_for_source(source), 8),
-        eligibility_filter=lambda example: not example.id.endswith("00000"),
+        eligibility_filter=lambda example: example.id != blocked_id,
         leakage_index=_empty_leakage(),
     )
 
+    filtered_records = load_source_training_records(
+        prepared.train_path
+    ) + load_source_training_records(prepared.validation_path)
+    assert blocked_id not in {
+        record.example.id for record in filtered_records if record.domain is Domain.MATH
+    }
     manifest = json.loads(prepared.manifest_path.read_text(encoding="utf-8"))
     assert manifest["sources"]["math"]["excluded_rows"]["ineligible"] == 1
 
@@ -285,6 +303,4 @@ def test_default_source_loader_honors_local_files_only(
 
     prepare_training_data(config, tmp_path, leakage_index=_empty_leakage())
 
-    assert calls == [
-        (config.data.sources[domain].dataset, True) for domain in Domain
-    ]
+    assert calls == [(config.data.sources[domain].dataset, True) for domain in Domain]
