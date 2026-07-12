@@ -152,9 +152,7 @@ def _dataset_rows(records: Iterable[SFTTrainingRecord]) -> list[dict[str, object
     return [
         {
             "prompt": [message.model_dump(mode="json") for message in record.prompt],
-            "completion": [
-                message.model_dump(mode="json") for message in record.completion
-            ],
+            "completion": [message.model_dump(mode="json") for message in record.completion],
         }
         for record in records
     ]
@@ -211,6 +209,8 @@ class LoraTrainerBackend:
     def _lora_configuration(self) -> Any:
         return self.modules.lora_config(
             task_type=self.modules.task_type.CAUSAL_LM,
+            base_model_name_or_path=self.config.model.model_id,
+            revision=self.config.model.revision,
             r=self.config.lora.rank,
             lora_alpha=self.config.lora.alpha,
             lora_dropout=self.config.lora.dropout,
@@ -279,8 +279,7 @@ class LoraTrainerBackend:
                     f"{expected_count} required"
                 )
             if any(
-                record.domain is not specialist or record.split is not split
-                for record in records
+                record.domain is not specialist or record.split is not split for record in records
             ):
                 raise ValueError(
                     f"{specialist.value} {split.value} records contain another domain or split"
@@ -302,9 +301,7 @@ class LoraTrainerBackend:
         self._validate_records(specialist, train_records, validation_records)
         work_dir.mkdir(parents=True, exist_ok=True)
         train_dataset = self.modules.dataset.from_list(_dataset_rows(train_records))
-        validation_dataset = self.modules.dataset.from_list(
-            _dataset_rows(validation_records)
-        )
+        validation_dataset = self.modules.dataset.from_list(_dataset_rows(validation_records))
         trainer = self.modules.sft_trainer(
             model=self.model,
             args=self._sft_configuration(work_dir),

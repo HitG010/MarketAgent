@@ -5,6 +5,7 @@ from small_models_society.inference.config import (
     load_inference_config,
 )
 from small_models_society.inference.contracts import (
+    AdapterReference,
     ChatMessage,
     GenerationOutput,
     GenerationRequest,
@@ -43,6 +44,7 @@ from small_models_society.inference.runner import (
 )
 
 __all__ = [
+    "AdapterReference",
     "ChatMessage",
     "GenerationOutput",
     "GenerationRequest",

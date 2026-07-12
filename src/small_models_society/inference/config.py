@@ -18,6 +18,7 @@ class DevicePreference(StrEnum):
     AUTO = "auto"
     CPU = "cpu"
     CUDA = "cuda"
+    MPS = "mps"
 
 
 class DTypePreference(StrEnum):

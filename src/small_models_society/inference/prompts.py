@@ -140,11 +140,13 @@ def render_generation_request(
     catalog: PromptCatalog,
     profile: PromptProfileName | str,
     max_new_tokens: int,
+    adapter: str | None = None,
 ) -> GenerationRequest:
     profile_name = PromptProfileName(profile)
     return GenerationRequest(
         example=example,
         profile=profile_name.value,
+        adapter=adapter,
         messages=render_messages(example, catalog, profile_name),
         max_new_tokens=max_new_tokens,
     )

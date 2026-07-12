@@ -94,6 +94,24 @@ def test_auto_selects_cuda_float16_without_bfloat16() -> None:
     assert report.selected_dtype == "float16"
 
 
+def test_auto_selects_mps_float16_without_cuda() -> None:
+    report = select_hardware(
+        _config(),
+        _capabilities(mps_built=True, mps_available=True),
+    )
+
+    assert report.ready is True
+    assert report.selected_device == "mps"
+    assert report.selected_dtype == "float16"
+
+
+def test_explicit_unavailable_mps_is_an_error() -> None:
+    report = select_hardware(_config(device=DevicePreference.MPS), _capabilities())
+
+    assert report.ready is False
+    assert any("MPS was requested" in error for error in report.errors)
+
+
 def test_missing_inference_packages_make_report_not_ready() -> None:
     report = select_hardware(
         _config(),

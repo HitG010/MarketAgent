@@ -22,7 +22,11 @@ from small_models_society.data.prepare import (
 )
 from small_models_society.evaluation import load_predictions, write_predictions
 from small_models_society.inference.config import InferenceConfig
-from small_models_society.inference.contracts import TextGenerationBackend, to_inference_example
+from small_models_society.inference.contracts import (
+    AdapterReference,
+    TextGenerationBackend,
+    to_inference_example,
+)
 from small_models_society.inference.hardware import HardwareReport
 from small_models_society.inference.huggingface import InferenceOutOfMemoryError
 from small_models_society.inference.prompts import (
@@ -50,6 +54,7 @@ class EmptyGenerationError(ValueError):
 
 class PredictionRunOptions(StrictModel):
     profile: PromptProfileName = PromptProfileName.GENERAL
+    adapter: AdapterReference | None = None
     domains: list[Domain] = Field(default_factory=lambda: list(Domain), min_length=1)
     limit: int | None = Field(default=None, gt=0)
     resume: bool = False
@@ -66,20 +71,23 @@ class PredictionRunOptions(StrictModel):
 
 
 class RunManifest(StrictModel):
-    schema_version: Literal[2] = 2
+    schema_version: Literal[3] = 3
     benchmark_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
     inference_config_fingerprint: str = Field(pattern=r"^[0-9a-f]{64}$")
     prompt_catalog_fingerprint: str = Field(pattern=r"^[0-9a-f]{64}$")
     model_id: str
     model_revision: str = Field(pattern=r"^[0-9a-f]{40}$")
     profile: PromptProfileName
-    selected_device: Literal["cpu", "cuda"]
+    adapter_name: str | None = None
+    adapter_sha256: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$")
+    adapter_run_fingerprint: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$")
+    selected_device: Literal["cpu", "cuda", "mps"]
     selected_dtype: Literal["float32", "float16", "bfloat16"]
     python_version: str
     cuda_device_name: str | None = None
     cuda_runtime_version: str | None = None
     cuda_vram_gb: float | None = Field(default=None, ge=0)
-    implementation_version: Literal[2] = 2
+    implementation_version: Literal[3] = 3
     package_versions: dict[str, str | None]
     selected_domains: list[Domain]
     limit: int | None = Field(default=None, gt=0)
@@ -215,20 +223,23 @@ def _create_manifest(
     options: PredictionRunOptions,
 ) -> RunManifest:
     values: dict[str, object] = {
-        "schema_version": 2,
+        "schema_version": 3,
         "benchmark_sha256": sha256_bytes(benchmark_path.read_bytes()),
         "inference_config_fingerprint": config.fingerprint(),
         "prompt_catalog_fingerprint": catalog.fingerprint(),
         "model_id": config.model.model_id,
         "model_revision": config.model.revision,
         "profile": options.profile,
+        "adapter_name": options.adapter.name if options.adapter else None,
+        "adapter_sha256": options.adapter.sha256 if options.adapter else None,
+        "adapter_run_fingerprint": (options.adapter.run_fingerprint if options.adapter else None),
         "selected_device": hardware.selected_device,
         "selected_dtype": hardware.selected_dtype,
         "python_version": hardware.python_version,
         "cuda_device_name": hardware.cuda_device_name,
         "cuda_runtime_version": hardware.cuda_runtime_version,
         "cuda_vram_gb": hardware.cuda_vram_gb,
-        "implementation_version": 2,
+        "implementation_version": 3,
         "package_versions": hardware.package_versions,
         "selected_domains": options.domains,
         "limit": options.limit,
@@ -265,6 +276,9 @@ def _error_metadata(
         "profile": manifest.profile.value,
         "run_fingerprint": manifest.run_fingerprint,
         "model_revision": manifest.model_revision,
+        "adapter": manifest.adapter_name,
+        "adapter_sha256": manifest.adapter_sha256,
+        "adapter_run_fingerprint": manifest.adapter_run_fingerprint,
         "error_type": type(error).__name__,
         "error_message": message or "generation failed without an error message",
     }
@@ -311,6 +325,18 @@ def _validate_resumed_predictions(
         if prediction.metadata.get("profile") != manifest.profile.value:
             raise ResumeMismatchError(
                 f"existing prediction profile does not match {prediction.example_id}"
+            )
+        if prediction.metadata.get("adapter") != manifest.adapter_name:
+            raise ResumeMismatchError(
+                f"existing prediction adapter does not match {prediction.example_id}"
+            )
+        if prediction.metadata.get("adapter_sha256") != manifest.adapter_sha256:
+            raise ResumeMismatchError(
+                f"existing prediction adapter hash does not match {prediction.example_id}"
+            )
+        if prediction.metadata.get("adapter_run_fingerprint") != manifest.adapter_run_fingerprint:
+            raise ResumeMismatchError(
+                f"existing prediction adapter run does not match {prediction.example_id}"
             )
         if prediction.metadata.get("run_fingerprint") != manifest.run_fingerprint:
             raise ResumeMismatchError(
@@ -452,6 +478,7 @@ def run_predictions(
                 catalog,
                 resolved_options.profile,
                 config.generation.max_new_tokens[example.domain],
+                manifest.adapter_name,
             )
             attempt_started = clock()
             try:
@@ -465,6 +492,9 @@ def run_predictions(
                     "profile": resolved_options.profile.value,
                     "run_fingerprint": manifest.run_fingerprint,
                     "model_revision": manifest.model_revision,
+                    "adapter": manifest.adapter_name,
+                    "adapter_sha256": manifest.adapter_sha256,
+                    "adapter_run_fingerprint": manifest.adapter_run_fingerprint,
                 }
                 prediction = PredictionRecord(
                     example_id=example.id,

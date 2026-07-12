@@ -72,7 +72,7 @@ def test_configuration_fingerprint_changes_with_generation_budget() -> None:
     ("path", "value"),
     [
         (("model", "revision"), "main"),
-        (("model", "device"), "mps"),
+        (("model", "device"), "tpu"),
         (("model", "dtype"), "float8"),
         (("model", "trust_remote_code"), True),
         (("model", "use_safetensors"), False),

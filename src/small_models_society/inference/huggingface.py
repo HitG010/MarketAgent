@@ -5,6 +5,7 @@ from __future__ import annotations
 import importlib
 import time
 from collections.abc import Callable
+from contextlib import AbstractContextManager, nullcontext
 from dataclasses import dataclass
 from typing import Any
 
@@ -99,6 +100,20 @@ class HuggingFaceBackend:
     def _synchronize(self) -> None:
         if self.hardware.selected_device == "cuda":
             self.modules.torch.cuda.synchronize()
+        elif self.hardware.selected_device == "mps":
+            self.modules.torch.mps.synchronize()
+
+    def _activate_request(
+        self,
+        request: GenerationRequest,
+    ) -> AbstractContextManager[None]:
+        if request.adapter is not None:
+            raise ValueError("the base Hugging Face backend does not support adapters")
+        return nullcontext()
+
+    def _request_metadata(self, request: GenerationRequest) -> dict[str, object]:
+        del request
+        return {}
 
     @staticmethod
     def _is_out_of_memory(error: RuntimeError) -> bool:
@@ -169,7 +184,7 @@ class HuggingFaceBackend:
         self._synchronize()
         started = self._clock()
         try:
-            with self.modules.torch.inference_mode():
+            with self._activate_request(request), self.modules.torch.inference_mode():
                 output_ids = self.model.generate(
                     **encoded,
                     max_new_tokens=request.max_new_tokens,
@@ -208,6 +223,7 @@ class HuggingFaceBackend:
             "stop_reason": stop_reason,
             "torch_version": self.modules.torch_version,
             "transformers_version": self.modules.transformers_version,
+            **self._request_metadata(request),
         }
         return GenerationOutput(
             text=text,

@@ -36,6 +36,8 @@ class RuntimeCapabilities(StrictModel):
     cuda_device_name: str | None = None
     cuda_runtime_version: str | None = None
     cuda_vram_gb: float | None = Field(default=None, ge=0)
+    mps_built: bool = False
+    mps_available: bool = False
     system_ram_gb: float | None = Field(default=None, ge=0)
     model_cache_path: str
     model_cached: bool = False
@@ -47,12 +49,14 @@ class HardwareReport(StrictModel):
     revision: str
     python_version: str
     package_versions: dict[str, str | None]
-    selected_device: Literal["cpu", "cuda"]
+    selected_device: Literal["cpu", "cuda", "mps"]
     selected_dtype: Literal["float32", "float16", "bfloat16"]
     cuda_available: bool
     cuda_device_name: str | None = None
     cuda_runtime_version: str | None = None
     cuda_vram_gb: float | None = Field(default=None, ge=0)
+    mps_built: bool = False
+    mps_available: bool = False
     system_ram_gb: float | None = Field(default=None, ge=0)
     model_cache_path: str
     model_cached: bool
@@ -158,6 +162,8 @@ def collect_runtime_capabilities(
     cuda_device_name: str | None = None
     cuda_runtime_version: str | None = None
     cuda_vram_gb: float | None = None
+    mps_built = False
+    mps_available = False
     if torch_module is not None:
         cuda_runtime_version = getattr(torch_module.version, "cuda", None)
         cuda_available = bool(torch_module.cuda.is_available())
@@ -166,6 +172,10 @@ def collect_runtime_capabilities(
             cuda_device_name = str(torch_module.cuda.get_device_name(0))
             total_memory = int(torch_module.cuda.get_device_properties(0).total_memory)
             cuda_vram_gb = total_memory / 1024**3
+        mps_backend = getattr(getattr(torch_module, "backends", None), "mps", None)
+        if mps_backend is not None:
+            mps_built = bool(mps_backend.is_built())
+            mps_available = bool(mps_backend.is_available())
 
     system_ram_gb: float | None = None
     if psutil_module is not None:
@@ -188,6 +198,8 @@ def collect_runtime_capabilities(
         cuda_device_name=cuda_device_name,
         cuda_runtime_version=cuda_runtime_version,
         cuda_vram_gb=cuda_vram_gb,
+        mps_built=mps_built,
+        mps_available=mps_available,
         system_ram_gb=system_ram_gb,
         model_cache_path=str(snapshot_path),
         model_cached=model_snapshot_is_complete(snapshot_path),
@@ -198,29 +210,39 @@ def _select_device(
     preference: DevicePreference,
     capabilities: RuntimeCapabilities,
     errors: list[str],
-) -> Literal["cpu", "cuda"]:
+) -> Literal["cpu", "cuda", "mps"]:
     if preference is DevicePreference.CPU:
         return "cpu"
     if preference is DevicePreference.CUDA:
         if not capabilities.cuda_available:
             errors.append("CUDA was requested but no CUDA device is available.")
         return "cuda"
-    return "cuda" if capabilities.cuda_available else "cpu"
+    if preference is DevicePreference.MPS:
+        if not capabilities.mps_available:
+            errors.append("MPS was requested but no MPS device is available.")
+        return "mps"
+    if capabilities.cuda_available:
+        return "cuda"
+    return "mps" if capabilities.mps_available else "cpu"
 
 
 def _select_dtype(
     preference: DTypePreference,
-    device: Literal["cpu", "cuda"],
+    device: Literal["cpu", "cuda", "mps"],
     capabilities: RuntimeCapabilities,
     errors: list[str],
 ) -> Literal["float32", "float16", "bfloat16"]:
     if preference is DTypePreference.AUTO:
         if device == "cpu":
             return "float32"
+        if device == "mps":
+            return "float16"
         return "bfloat16" if capabilities.cuda_bfloat16_supported else "float16"
     selected = preference.value
     if device == "cpu" and selected != "float32":
         errors.append("CPU inference supports only float32 in this project configuration.")
+    if device == "mps" and selected == "bfloat16":
+        errors.append("MPS inference does not use bfloat16 in this project configuration.")
     if selected == "bfloat16" and device == "cuda" and not capabilities.cuda_bfloat16_supported:
         errors.append("bfloat16 was requested but the CUDA device does not support it.")
     return selected  # type: ignore[return-value]
@@ -270,6 +292,13 @@ def select_hardware(
             f"System RAM is {capabilities.system_ram_gb:.1f} GB; "
             f"at least {MINIMUM_CPU_RAM_GB:.1f} GB is recommended for CPU inference."
         )
+    if device == "mps" and (
+        capabilities.system_ram_gb is not None and capabilities.system_ram_gb < MINIMUM_CPU_RAM_GB
+    ):
+        warnings.append(
+            f"Apple unified memory is {capabilities.system_ram_gb:.1f} GB; "
+            f"at least {MINIMUM_CPU_RAM_GB:.1f} GB is recommended for MPS inference."
+        )
     if capabilities.system_ram_gb is None:
         psutil_detail = capabilities.import_errors.get("psutil")
         suffix = f" ({psutil_detail})" if psutil_detail else ""
@@ -302,6 +331,8 @@ def select_hardware(
         cuda_device_name=capabilities.cuda_device_name,
         cuda_runtime_version=capabilities.cuda_runtime_version,
         cuda_vram_gb=capabilities.cuda_vram_gb,
+        mps_built=capabilities.mps_built,
+        mps_available=capabilities.mps_available,
         system_ram_gb=capabilities.system_ram_gb,
         model_cache_path=capabilities.model_cache_path,
         model_cached=capabilities.model_cached,

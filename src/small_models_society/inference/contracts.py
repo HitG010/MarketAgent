@@ -77,9 +77,16 @@ class ChatMessage(StrictModel):
     content: str = Field(min_length=1)
 
 
+class AdapterReference(StrictModel):
+    name: str = Field(min_length=1)
+    sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    run_fingerprint: str = Field(pattern=r"^[0-9a-f]{64}$")
+
+
 class GenerationRequest(StrictModel):
     example: InferenceExample
     profile: str = Field(min_length=1)
+    adapter: str | None = Field(default=None, min_length=1)
     messages: list[ChatMessage] = Field(min_length=1)
     max_new_tokens: int = Field(gt=0)
 

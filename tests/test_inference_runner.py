@@ -6,7 +6,11 @@ import pytest
 
 from small_models_society.evaluation import load_predictions, write_predictions
 from small_models_society.inference.config import InferenceConfig, load_inference_config
-from small_models_society.inference.contracts import GenerationOutput, GenerationRequest
+from small_models_society.inference.contracts import (
+    AdapterReference,
+    GenerationOutput,
+    GenerationRequest,
+)
 from small_models_society.inference.hardware import HardwareReport
 from small_models_society.inference.huggingface import InferenceOutOfMemoryError
 from small_models_society.inference.prompts import (
@@ -450,6 +454,50 @@ def test_fail_fast_preserves_completed_checkpoint(tmp_path: Path) -> None:
 
 
 def test_out_of_memory_is_always_fatal(tmp_path: Path) -> None:
+
+    def test_adapter_identity_enters_requests_manifest_rows_and_resume(tmp_path: Path) -> None:
+        output = tmp_path / "adapter.jsonl"
+        backend = FakeBackend()
+        adapter = AdapterReference(
+            name="math",
+            sha256="a" * 64,
+            run_fingerprint="b" * 64,
+        )
+        options = PredictionRunOptions(
+            domains=[Domain.MATH],
+            adapter=adapter,
+        )
+
+        result = run_predictions(
+            FIXTURE_BENCHMARK,
+            output,
+            _config(),
+            _catalog(),
+            _hardware(),
+            backend,
+            options,
+        )
+
+        assert result.manifest.adapter_name == "math"
+        assert result.manifest.adapter_sha256 == "a" * 64
+        assert backend.requests[0].adapter == "math"
+        assert result.predictions[0].metadata["adapter"] == "math"
+        assert result.predictions[0].metadata["adapter_sha256"] == "a" * 64
+
+        predictions = load_predictions(output)
+        metadata = {**predictions[0].metadata, "adapter_sha256": "c" * 64}
+        write_predictions(output, [predictions[0].model_copy(update={"metadata": metadata})])
+        with pytest.raises(ResumeMismatchError, match="adapter hash"):
+            run_predictions(
+                FIXTURE_BENCHMARK,
+                output,
+                _config(),
+                _catalog(),
+                _hardware(),
+                backend,
+                options.model_copy(update={"resume": True}),
+            )
+
     output = tmp_path / "oom.jsonl"
     backend = FakeBackend({"fixture-code-1": InferenceOutOfMemoryError("oom")})
 
