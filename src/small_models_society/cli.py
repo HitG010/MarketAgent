@@ -14,6 +14,8 @@ from small_models_society.data import BenchmarkConfig, load_config, prepare_benc
 from small_models_society.data.prepare import load_benchmark
 from small_models_society.evaluation import evaluate_to_directory, write_predictions
 from small_models_society.fixtures import oracle_predictions
+from small_models_society.inference.config import load_inference_config
+from small_models_society.inference.hardware import detect_hardware
 from small_models_society.sandbox import (
     DEFAULT_IMAGE,
     DockerSandbox,
@@ -119,6 +121,13 @@ def _doctor(arguments: argparse.Namespace) -> int:
     return 0 if ok else 1
 
 
+def _inference_doctor(arguments: argparse.Namespace) -> int:
+    config = load_inference_config(arguments.config)
+    report = detect_hardware(config)
+    _print_json(report.model_dump(mode="json"))
+    return 0 if report.ready else 1
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="sms",
@@ -149,6 +158,16 @@ def build_parser() -> argparse.ArgumentParser:
     evaluate_parser.add_argument("--sandbox-image", default=DEFAULT_IMAGE)
     evaluate_parser.add_argument("--timeout-seconds", type=float, default=2.0)
     evaluate_parser.set_defaults(handler=_evaluate)
+
+    inference_parser = commands.add_parser("inference", help="run local model inference")
+    inference_commands = inference_parser.add_subparsers(dest="inference_command", required=True)
+    inference_doctor_parser = inference_commands.add_parser(
+        "doctor", help="check local model prerequisites"
+    )
+    inference_doctor_parser.add_argument(
+        "--config", type=Path, default=Path("configs/inference.yaml")
+    )
+    inference_doctor_parser.set_defaults(handler=_inference_doctor)
 
     doctor_parser = commands.add_parser("doctor", help="check local prerequisites")
     doctor_parser.add_argument("--config", type=Path, default=Path("configs/benchmark.yaml"))

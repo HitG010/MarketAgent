@@ -13,6 +13,12 @@ from small_models_society.inference.contracts import (
     to_inference_example,
     validate_inference_example,
 )
+from small_models_society.inference.hardware import (
+    HardwareReport,
+    RuntimeCapabilities,
+    detect_hardware,
+    select_hardware,
+)
 from small_models_society.inference.prompts import (
     PromptCatalog,
     PromptProfileName,
@@ -26,16 +32,20 @@ __all__ = [
     "ChatMessage",
     "GenerationOutput",
     "GenerationRequest",
+    "HardwareReport",
     "InferenceConfig",
     "InferenceExample",
     "PromptCatalog",
     "PromptProfileName",
+    "RuntimeCapabilities",
     "TextGenerationBackend",
     "clean_response",
+    "detect_hardware",
     "load_inference_config",
     "load_prompt_catalog",
     "render_generation_request",
     "render_messages",
+    "select_hardware",
     "to_inference_example",
     "validate_inference_example",
 ]
