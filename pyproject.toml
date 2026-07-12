@@ -46,6 +46,7 @@ addopts = "--strict-config --strict-markers"
 testpaths = ["tests"]
 markers = [
     "docker: requires a running Docker daemon",
+    "model: requires optional inference dependencies and full model weights",
 ]
 
 [tool.ruff]
