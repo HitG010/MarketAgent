@@ -24,13 +24,20 @@ from small_models_society.experiments.prompt_matrix import (
     inspect_prompt_matrix,
     run_prompt_matrix,
 )
+from small_models_society.experiments.workflow_matrix import (
+    CandidateWorkflowRuntime,
+    WorkflowMatrixOptions,
+    WorkflowMatrixPlan,
+    run_workflow_matrix_with_runtime_factory,
+)
 from small_models_society.fixtures import oracle_predictions
 from small_models_society.inference.adapters import (
+    AdapterCatalog,
     PeftHuggingFaceBackend,
     load_adapter_catalog,
 )
-from small_models_society.inference.config import load_inference_config
-from small_models_society.inference.hardware import detect_hardware
+from small_models_society.inference.config import InferenceConfig, load_inference_config
+from small_models_society.inference.hardware import HardwareReport, detect_hardware
 from small_models_society.inference.huggingface import HuggingFaceBackend
 from small_models_society.inference.prompts import (
     PromptProfileName,
@@ -48,9 +55,32 @@ from small_models_society.resources import (
     DEFAULT_ROUTING_CONFIG,
     DEFAULT_TRAINING_CONFIG,
 )
+from small_models_society.retrieval.bm25 import BM25Retriever
+from small_models_society.retrieval.contracts import RetrievalRelevanceRecord
+from small_models_society.retrieval.corpus import (
+    load_retrieval_corpus,
+    prepare_retrieval_corpus,
+    verify_retrieval_corpus_source,
+)
 from small_models_society.routing.artifacts import load_workflow_requests
-from small_models_society.routing.config import load_routing_config
-from small_models_society.routing.registry import build_action_registry
+from small_models_society.routing.config import (
+    ActionKind,
+    LocalModelActionConfig,
+    RoutingConfig,
+    load_routing_config,
+)
+from small_models_society.routing.data import (
+    RoutingSplit,
+    VerifiedRoutingSplit,
+    load_verified_routing_split,
+    prepare_routing_data,
+)
+from small_models_society.routing.local import (
+    LocalModelExecutor,
+    local_execution_fingerprint,
+    validate_local_execution_context,
+)
+from small_models_society.routing.registry import ActionRegistry, build_action_registry
 from small_models_society.routing.replay import (
     import_replay_captures,
     inspect_replay_catalog,
@@ -523,6 +553,323 @@ def _routing_replay_inspect(arguments: argparse.Namespace) -> int:
     return 0
 
 
+def _configured_routing(arguments: argparse.Namespace) -> RoutingConfig:
+    config = load_routing_config(arguments.config)
+    data_updates: dict[str, object] = {}
+    output_dir = getattr(arguments, "data_dir", None)
+    if output_dir is not None:
+        data_updates["output_dir"] = str(output_dir)
+    if getattr(arguments, "local_files_only", False):
+        data_updates["local_files_only"] = True
+    return config.model_copy(update={"data": config.data.model_copy(update=data_updates)})
+
+
+def _routing_split_paths(
+    data_dir: Path,
+    split: RoutingSplit,
+) -> tuple[Path, Path, Path]:
+    return (
+        data_dir / f"{split.value}.requests.jsonl",
+        data_dir / f"{split.value}.evaluator.jsonl",
+        data_dir / "manifest.json",
+    )
+
+
+def _routing_prepare(arguments: argparse.Namespace) -> int:
+    config = _configured_routing(arguments)
+    data_dir = Path(config.data.output_dir)
+    prompts = load_prompt_catalog(arguments.prompts)
+    prepared = prepare_routing_data(
+        config,
+        prompts,
+        data_dir,
+        overwrite=arguments.overwrite,
+    )
+    corpus_manifests: dict[str, str] = {}
+    for split, evaluator_path in (
+        (RoutingSplit.DEVELOPMENT, prepared.development_evaluator_path),
+        (RoutingSplit.TEST, prepared.test_evaluator_path),
+    ):
+        corpus = prepare_retrieval_corpus(
+            config,
+            evaluator_path,
+            prepared.manifest_path,
+            split,
+            data_dir / "retrieval" / split.value,
+            overwrite=arguments.overwrite,
+        )
+        corpus_manifests[split.value] = str(corpus.manifest_path)
+    _print_json(
+        {
+            "data_manifest": str(prepared.manifest_path),
+            "development_requests": str(prepared.development_requests_path),
+            "development_rows": prepared.development_row_count,
+            "retrieval_manifests": corpus_manifests,
+            "test_requests": str(prepared.test_requests_path),
+            "test_rows": prepared.test_row_count,
+        }
+    )
+    return 0
+
+
+def _routing_inspect(arguments: argparse.Namespace) -> int:
+    config = _configured_routing(arguments)
+    data_dir = Path(config.data.output_dir)
+    registry = build_action_registry(config)
+    splits: dict[str, object] = {}
+    for split in RoutingSplit:
+        requests_path, evaluator_path, manifest_path = _routing_split_paths(data_dir, split)
+        verified = load_verified_routing_split(
+            requests_path,
+            evaluator_path,
+            manifest_path,
+            split,
+        )
+        corpus_dir = data_dir / "retrieval" / split.value
+        corpus_summary: dict[str, object] | None = None
+        if (corpus_dir / "manifest.json").exists():
+            corpus = load_retrieval_corpus(corpus_dir)
+            verify_retrieval_corpus_source(
+                corpus,
+                split,
+                verified.evaluator_sha256,
+            )
+            corpus_summary = {
+                "corpus_fingerprint": corpus.manifest.corpus_fingerprint,
+                "coverage": corpus.manifest.corpus_coverage,
+                "document_count": corpus.manifest.document_count,
+                "relevance_count": corpus.manifest.relevance_count,
+            }
+        splits[split.value] = {
+            "evaluator_sha256": verified.evaluator_sha256,
+            "request_count": len(verified.requests),
+            "requests_sha256": verified.requests_sha256,
+            "retrieval": corpus_summary,
+        }
+    _print_json(
+        {
+            "actions": {
+                action_id: {
+                    "action_fingerprint": registered.action.action_fingerprint,
+                    "executor_id": registered.action.executor_id,
+                    "kind": registered.action.kind.value,
+                }
+                for action_id, registered in sorted(registry.actions.items())
+            },
+            "configured_routing_fingerprint": config.fingerprint(),
+            "data_dir": str(data_dir),
+            "splits": splits,
+        }
+    )
+    return 0
+
+
+def _optional_adapter_catalog(
+    arguments: argparse.Namespace,
+    routing_config: RoutingConfig,
+    inference_config: InferenceConfig,
+) -> AdapterCatalog | None:
+    if arguments.adapter_root is not None and not arguments.adapter_root.is_dir():
+        raise ValueError(f"explicit adapter root is unavailable: {arguments.adapter_root}")
+    approved = any(
+        isinstance(action, LocalModelActionConfig)
+        and action.adapter is not None
+        and action.approved
+        for action in routing_config.actions.values()
+    )
+    if not approved:
+        return None
+    root = arguments.adapter_root or Path(routing_config.model.adapter_root)
+    if not root.is_dir():
+        return None
+    training_config = load_training_config(arguments.training_config)
+    output = training_config.output.model_copy(update={"adapter_root": str(root)})
+    training_config = training_config.model_copy(update={"output": output})
+    return load_adapter_catalog(root, training_config, inference_config)
+
+
+def _workflow_runtime(
+    arguments: argparse.Namespace,
+    routing_config: RoutingConfig,
+    registry: ActionRegistry,
+    requests_path: Path,
+    split: RoutingSplit,
+    evaluator_sha256: str,
+    prepared_prompt_catalog_fingerprint: str,
+) -> tuple[CandidateWorkflowRuntime, HardwareReport]:
+    inference_config = load_inference_config(arguments.inference_config)
+    if arguments.local_files_only:
+        model = inference_config.model.model_copy(update={"local_files_only": True})
+        inference_config = inference_config.model_copy(update={"model": model})
+    prompts = load_prompt_catalog(arguments.prompts)
+    if prompts.fingerprint() != prepared_prompt_catalog_fingerprint:
+        raise ValueError(
+            "runtime prompt catalog does not match the catalog used to prepare routing requests"
+        )
+    hardware = detect_hardware(inference_config)
+    adapters = _optional_adapter_catalog(arguments, routing_config, inference_config)
+    validate_local_execution_context(
+        routing_config,
+        inference_config,
+        prompts,
+        hardware,
+        adapters,
+        require_ready=False,
+    )
+    local_execution_fingerprints: dict[str, str] = {}
+    for action_id, registered in registry.actions.items():
+        action = registered.action
+        if action.kind is not ActionKind.LOCAL_MODEL:
+            continue
+        adapter = None
+        if action.adapter_id is not None:
+            if adapters is None:
+                continue
+            adapter = adapters.adapters.get(Domain(action.adapter_id))
+            if adapter is None:
+                continue
+        local_execution_fingerprints[action_id] = local_execution_fingerprint(
+            action,
+            inference_config,
+            prompts,
+            hardware,
+            adapter,
+        )
+    local = (
+        LocalModelExecutor(
+            routing_config,
+            inference_config,
+            prompts,
+            hardware,
+            adapters,
+        )
+        if hardware.ready
+        else None
+    )
+
+    data_dir = Path(routing_config.data.output_dir)
+    corpus_dir = data_dir / "retrieval" / split.value
+    retriever = None
+    relevance: tuple[RetrievalRelevanceRecord, ...] = ()
+    if (corpus_dir / "manifest.json").exists():
+        corpus = load_retrieval_corpus(corpus_dir)
+        verify_retrieval_corpus_source(corpus, split, evaluator_sha256)
+        retriever = BM25Retriever.from_loaded_corpus(corpus, routing_config.retrieval)
+        relevance = corpus.relevance
+
+    pricing_path = arguments.pricing or Path(routing_config.replay.pricing_path)
+    replay_rows = arguments.replay_rows or Path(routing_config.replay.directory) / "rows.jsonl"
+    replay = None
+    if arguments.replay_rows is not None and not replay_rows.exists():
+        raise ValueError(f"explicit replay rows are unavailable: {replay_rows}")
+    if replay_rows.exists():
+        if not pricing_path.exists():
+            raise ValueError("replay pricing is required when replay rows exist")
+        pricing = load_pricing_catalog(pricing_path)
+        replay = load_verified_replay_catalog(
+            replay_rows,
+            requests_path,
+            routing_config,
+            registry,
+            pricing,
+        )
+    return (
+        CandidateWorkflowRuntime(
+            routing_config,
+            registry,
+            local=local,
+            retriever=retriever,
+            replay=replay,
+            retrieval_relevance=relevance,
+            local_execution_fingerprints=local_execution_fingerprints,
+        ),
+        hardware,
+    )
+
+
+def _workflow_matrix(arguments: argparse.Namespace) -> int:
+    routing_config = _configured_routing(arguments)
+    split = RoutingSplit(arguments.split)
+    data_dir = Path(routing_config.data.output_dir)
+    requests_path, evaluator_path, manifest_path = _routing_split_paths(data_dir, split)
+    registry = build_action_registry(routing_config)
+    options = WorkflowMatrixOptions(
+        split=split,
+        limit=arguments.limit,
+        resume=arguments.resume,
+        overwrite=arguments.overwrite,
+        fail_fast=arguments.fail_fast,
+    )
+    hardware_holder: list[HardwareReport] = []
+
+    def create_runtime(verified: VerifiedRoutingSplit) -> CandidateWorkflowRuntime:
+        selected_evaluators = list(verified.evaluator_records)
+        if arguments.limit is not None:
+            selected_evaluators = selected_evaluators[: arguments.limit]
+        if any(record.example.domain is Domain.CODE for record in selected_evaluators):
+            if not docker_available():
+                raise RuntimeError("Docker is required when the workflow matrix includes code")
+            if not sandbox_image_available(arguments.sandbox_image):
+                raise RuntimeError(
+                    "The requested sandbox image is unavailable; run `sms doctor --build-sandbox`."
+                )
+        runtime, hardware = _workflow_runtime(
+            arguments,
+            routing_config,
+            registry,
+            requests_path,
+            split,
+            verified.evaluator_sha256,
+            verified.prompt_catalog_fingerprint,
+        )
+        hardware_holder.append(hardware)
+        return runtime
+
+    def print_plan(plan: WorkflowMatrixPlan) -> None:
+        hardware = hardware_holder[0]
+        print(
+            "workflow matrix plan: "
+            + json.dumps(
+                {
+                    "actions": plan.action_count,
+                    "device": hardware.selected_device if hardware.ready else None,
+                    "local_ready": hardware.ready,
+                    "pending": plan.pending_cell_count,
+                    "requests": plan.request_count,
+                    "split": split.value,
+                },
+                sort_keys=True,
+            ),
+            file=sys.stderr,
+        )
+
+    result = run_workflow_matrix_with_runtime_factory(
+        requests_path,
+        evaluator_path,
+        manifest_path,
+        arguments.output_dir,
+        routing_config,
+        registry,
+        create_runtime,
+        DockerSandbox(
+            image=arguments.sandbox_image,
+            timeout_seconds=arguments.timeout_seconds,
+        ),
+        options,
+        print_plan,
+    )
+    floor_zero = result.summary["quality_floor_analysis"]["0.0"]
+    _print_json(
+        {
+            "best_quality_oracle": floor_zero["best_quality_oracle"]["mean_quality"],
+            "outcomes": str(result.outcomes_path),
+            "report": str(result.report_path),
+            "summary": str(result.summary_path),
+        }
+    )
+    return 0
+
+
 def _training_doctor(arguments: argparse.Namespace) -> int:
     config = _configured_training(arguments)
     report = detect_training_hardware(config, allow_cpu=arguments.allow_cpu)
@@ -828,6 +1175,42 @@ def build_parser() -> argparse.ArgumentParser:
     lora_matrix_parser.add_argument("--timeout-seconds", type=float, default=2.0)
     lora_matrix_parser.set_defaults(handler=_lora_matrix)
 
+    workflow_matrix_parser = experiment_commands.add_parser(
+        "workflow-matrix",
+        help="evaluate all available candidate workflows",
+    )
+    workflow_matrix_parser.add_argument("--config", type=Path, default=DEFAULT_ROUTING_CONFIG)
+    workflow_matrix_parser.add_argument(
+        "--inference-config",
+        type=Path,
+        default=DEFAULT_INFERENCE_CONFIG,
+    )
+    workflow_matrix_parser.add_argument(
+        "--training-config",
+        type=Path,
+        default=DEFAULT_TRAINING_CONFIG,
+    )
+    workflow_matrix_parser.add_argument("--prompts", type=Path, default=DEFAULT_PROMPT_PROFILES)
+    workflow_matrix_parser.add_argument("--data-dir", type=Path)
+    workflow_matrix_parser.add_argument("--adapter-root", type=Path)
+    workflow_matrix_parser.add_argument("--pricing", type=Path)
+    workflow_matrix_parser.add_argument("--replay-rows", type=Path)
+    workflow_matrix_parser.add_argument("--output-dir", type=Path, required=True)
+    workflow_matrix_parser.add_argument(
+        "--split",
+        choices=[split.value for split in RoutingSplit],
+        default=RoutingSplit.DEVELOPMENT.value,
+    )
+    workflow_matrix_parser.add_argument("--limit", type=int)
+    workflow_collision_group = workflow_matrix_parser.add_mutually_exclusive_group()
+    workflow_collision_group.add_argument("--resume", action="store_true")
+    workflow_collision_group.add_argument("--overwrite", action="store_true")
+    workflow_matrix_parser.add_argument("--local-files-only", action="store_true")
+    workflow_matrix_parser.add_argument("--fail-fast", action="store_true")
+    workflow_matrix_parser.add_argument("--sandbox-image", default=DEFAULT_IMAGE)
+    workflow_matrix_parser.add_argument("--timeout-seconds", type=float, default=2.0)
+    workflow_matrix_parser.set_defaults(handler=_workflow_matrix)
+
     training_parser = commands.add_parser("training", help="prepare and train LoRA specialists")
     training_commands = training_parser.add_subparsers(dest="training_command", required=True)
     training_doctor_parser = training_commands.add_parser(
@@ -866,6 +1249,25 @@ def build_parser() -> argparse.ArgumentParser:
 
     routing_parser = commands.add_parser("routing", help="prepare and inspect workflow routing")
     routing_commands = routing_parser.add_subparsers(dest="routing_command", required=True)
+    routing_prepare_parser = routing_commands.add_parser(
+        "prepare",
+        help="prepare leakage-free routing splits and retrieval corpora",
+    )
+    routing_prepare_parser.add_argument("--config", type=Path, default=DEFAULT_ROUTING_CONFIG)
+    routing_prepare_parser.add_argument("--prompts", type=Path, default=DEFAULT_PROMPT_PROFILES)
+    routing_prepare_parser.add_argument("--data-dir", type=Path)
+    routing_prepare_parser.add_argument("--local-files-only", action="store_true")
+    routing_prepare_parser.add_argument("--overwrite", action="store_true")
+    routing_prepare_parser.set_defaults(handler=_routing_prepare)
+
+    routing_inspect_parser = routing_commands.add_parser(
+        "inspect",
+        help="verify prepared routing splits and retrieval corpora",
+    )
+    routing_inspect_parser.add_argument("--config", type=Path, default=DEFAULT_ROUTING_CONFIG)
+    routing_inspect_parser.add_argument("--data-dir", type=Path)
+    routing_inspect_parser.set_defaults(handler=_routing_inspect)
+
     replay_import_parser = routing_commands.add_parser(
         "replay-import",
         help="validate and publish offline strong-model captures",
