@@ -6,11 +6,14 @@ benchmarks, validates predictions, scores answers, executes generated Python in 
 constrained Docker container, and writes reports. Phase 2 adds pinned local model
 inference plus one general and four prompt-specialist baselines. Phase 3 adds
 leakage-aware LoRA training and cross-domain validation for four learned adapters.
+Phase 4 adds a policy-gated candidate workflow laboratory with an exact calculator,
+split-specific BM25 retrieval, local base/conditional LoRA execution, verified
+strong-model replay, and full-information Pareto/oracle analysis.
 
 Prompt profiles still share one model and remain separate from the learned adapters.
-Phase 3 measures adapter differentiation but does not create router labels or train a
-router. Verification, escalation, RL, dashboards, and cloud deployment remain outside
-the current phase.
+Phase 4 measures candidate outcomes but does not create router labels or train a
+router. Live paid APIs, online exploration, RL, dashboards, and cloud deployment
+remain outside the current phase.
 
 ## Prerequisites
 
@@ -74,6 +77,23 @@ has an NVIDIA GPU but `inference doctor` reports `cuda_available: false`, use th
 Torch with the CUDA-enabled build for the pinned Torch release, then rerun
 `python -m pip check` and `sms inference doctor`. Do not infer CUDA support only from
 the presence of an NVIDIA driver.
+
+## Candidate Workflow Setup
+
+Create a separate Python 3.11 environment for Phase 4. The routing lock includes the
+local inference stack, PEFT adapter support, and pinned `rank-bm25==0.2.2`:
+
+```powershell
+py -3.11 -m venv .venv-routing
+.\.venv-routing\Scripts\python.exe -m pip install --upgrade pip
+.\.venv-routing\Scripts\python.exe -m pip install -r requirements-routing.lock
+.\.venv-routing\Scripts\python.exe -m pip install --no-build-isolation --no-deps -e .
+.\.venv-routing\Scripts\python.exe -m pip check
+```
+
+On Apple Silicon, use `python3.11`, `.venv-routing/bin/python`, and
+`.venv-routing/bin/sms`. The runtime should select MPS with FP16. Full commands and
+the claims boundary are in [docs/routing-research.md](docs/routing-research.md).
 
 ## Prepare Data
 
@@ -286,6 +306,60 @@ degradation, retention, and observed oracle opportunity. It deliberately does no
 emit per-example oracle router labels. See [docs/training.md](docs/training.md) for
 the full hardware, artifact, recovery, licensing, and interpretation guide.
 
+## Candidate Workflow Matrix
+
+Phase 4 requires the verified Phase 1 benchmark and Phase 3 selected source-data
+artifacts for leakage exclusion. Learned adapter weights and strong-model replay rows
+remain optional.
+
+Prepare opaque development/test requests, hidden evaluator rows, calculator fixtures,
+and one HotpotQA corpus per split:
+
+```powershell
+.\.venv-routing\Scripts\sms.exe routing prepare --local-files-only
+.\.venv-routing\Scripts\sms.exe routing inspect
+```
+
+Run the development matrix. Omit replay arguments when no verified replay dataset
+exists:
+
+```powershell
+.\.venv-routing\Scripts\sms.exe experiment workflow-matrix `
+  --data-dir data/routing `
+  --split development `
+  --output-dir reports/workflow-matrix/development `
+  --local-files-only
+```
+
+The eight configured actions cover the bounded calculator, local Qwen base, four
+conditional LoRA adapters, BM25-RAG plus local base, and provider-neutral strong
+replay. Every request/action pair receives one explicit completed, unsupported,
+blocked, unavailable, or error status. Policy is evaluated before runtime readiness.
+
+Outputs include independent `actions/<action-id>/outcomes.jsonl` checkpoints plus
+`action_outcomes.jsonl`, `workflow_matrix_summary.json`, and
+`workflow_matrix_report.md`. `--resume` can add newly approved LoRA or replay rows
+without rerunning unchanged actions. Aggregates are removed at the beginning of an
+attempt and republished only after the full selected grid and hidden-reference
+scoring succeed.
+
+The report includes action coverage, quality, safety feasibility, latency, known
+provider fee, energy-known rate, retrieval metrics, deterministic bootstrap
+intervals, rule baselines, constrained oracles, and Pareto frontiers. Unknown local
+compute cost and energy remain null. Energy comparisons never mix measurement
+sources. Local and RAG semantic safety remains unknown by default, so those outcomes
+are measured but are not oracle-feasible unless policy explicitly permits unknown
+safety.
+
+After development choices are frozen, run the complete untouched test split. A test
+run with `--limit` is labeled exploratory, not confirmatory.
+
+Strong-model observations are imported and inspected offline with `sms routing
+replay-import` and `sms routing replay-inspect`. Phase 4 never calls a paid model API
+or stores provider credentials. See
+[docs/routing-research.md](docs/routing-research.md) for capture contracts, policy
+rules, split semantics, replay commands, and interpretation gates.
+
 ## Sandbox Boundary
 
 MBPP candidate code is sent as JSON over standard input to Docker. It is never
@@ -308,7 +382,7 @@ the sandbox environment.
 .\.venv\Scripts\python.exe -m ruff format --check .
 .\.venv\Scripts\python.exe -m ruff check .
 .\.venv\Scripts\python.exe -m mypy src/small_models_society
-.\.venv\Scripts\python.exe -m pytest -m "not docker and not model and not training"
+.\.venv\Scripts\python.exe -m pytest -m "not docker and not model and not training and not workflow"
 ```
 
 With Docker Desktop running:
@@ -334,9 +408,18 @@ $env:SMS_RUN_TRAINING_TESTS = "1"
 Remove-Item Env:SMS_RUN_TRAINING_TESTS
 ```
 
+Run the production candidate workflow smoke after installing the routing lock and
+caching the pinned model:
+
+```powershell
+$env:SMS_RUN_WORKFLOW_TESTS = "1"
+.\.venv-routing\Scripts\python.exe -m pytest -m workflow -v
+Remove-Item Env:SMS_RUN_WORKFLOW_TESTS
+```
+
 Normal CI never downloads model weights or trains a model. It uses fake model
 backends for inference/training orchestration and runs Docker sandbox tests
-separately.
+separately. The production workflow smoke is also opt-in.
 
 ## Inference Troubleshooting
 

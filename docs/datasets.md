@@ -38,6 +38,31 @@ Adapters are derived artifacts. Before publishing or redistributing them, review
 source licenses and attribution/share-alike obligations, especially CC BY 4.0 and
 CC BY-SA 4.0. This repository records provenance but does not provide legal advice.
 
+## Phase 4 Routing Splits
+
+The routing laboratory samples unused rows from the same pinned evaluation source
+splits. It selects 50 development and 50 untouched test examples per domain with
+seed 42 after excluding:
+
+- every Phase 1 qualified source ID and normalized input-content hash
+- every selected Phase 3 train/validation source ID and content hash
+- duplicate normalized content within the routing source
+- overlap between routing development and routing test
+
+Action-visible rows use opaque request IDs. Domain, references, accepted answers,
+supporting facts, MBPP tests, and source IDs remain in separate hidden evaluator
+records. The manifest binds both sides by file hash, row count, and exact request ID.
+
+For HotpotQA, every action-visible request contains only the question. Phase 4 builds
+one content-addressed BM25 corpus per routing split from hidden context passages.
+Corpus documents contain title/body text only; request associations and supporting
+title relevance labels are stored separately. Corpus loading verifies the exact
+split and evaluator hash, preventing development evidence from being used in the
+untouched test run.
+
+The six-development/six-test calculator companion suite is synthetic and remains
+outside four-domain aggregate quality.
+
 ## Citations
 
 ### GSM8K
@@ -77,6 +102,9 @@ Explainable Multi-hop Question Answering*. EMNLP 2018.
   reference.
 - HotpotQA stores the distractor context and question as input. Accepted answers
   and supporting-fact indices remain references.
+
+The Phase 4 projection deliberately removes HotpotQA context from workflow requests.
+Only the BM25-RAG action can recover evidence from the separately verified corpus.
 
 The benchmark JSONL contains references because it is an evaluator artifact.
 Inference adapters must receive only each example's `input`, `id`, and permitted

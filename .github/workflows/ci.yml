@@ -31,7 +31,7 @@ jobs:
         run: python -m mypy src/small_models_society
       - name: Run offline tests
         run: >-
-          python -m pytest -m "not docker and not model and not training"
+          python -m pytest -m "not docker and not model and not training and not workflow"
           --cov=small_models_society --cov-report=term-missing
 
   docker-sandbox:

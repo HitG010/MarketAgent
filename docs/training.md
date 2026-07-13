@@ -190,6 +190,15 @@ Outputs include per-variant prediction/evaluation directories plus:
 The optional prompt summary contributes only its aggregate routing opportunity. No
 per-example prompt or adapter oracle selections are written as router labels.
 
+## Phase 4 Approval Gate
+
+Completed adapters are unavailable to the candidate workflow matrix until the
+matching `local.qwen-lora-<domain>.v1` action is explicitly approved in
+`configs/routing.yaml`. Keep all four actions unapproved until the formal M2 LoRA
+matrix has been reviewed against the interpretation gates below. A later approval
+extends the action matrix without invalidating unchanged base, calculator, retrieval,
+or replay outcomes.
+
 ## Interpretation Gates
 
 Pipeline success means deterministic data, valid adapters, safe publication,

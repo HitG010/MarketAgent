@@ -68,6 +68,7 @@ markers = [
     "docker: requires a running Docker daemon",
     "model: requires optional inference dependencies and full model weights",
     "training: requires optional PEFT/TRL dependencies and performs model training",
+    "workflow: requires the pinned local model and runs the production candidate workflows",
 ]
 
 [tool.ruff]

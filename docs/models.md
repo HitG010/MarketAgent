@@ -105,6 +105,31 @@ primarily reflect role prompting rather than different questions or output forma
 These profiles are not separate models, adapters, or trained specialists. They remain
 the prompt-only comparator for learned LoRA adapters.
 
+## Phase 4 Model Workflows
+
+Phase 4 keeps the same pinned Qwen model and general prompt but places it behind
+explicit workflow actions:
+
+- `local.qwen-base.v1` receives the prepared question-only request.
+- `rag.bm25-qwen-base.v1` receives the same question plus ranked corpus passages.
+- `local.qwen-lora-<domain>.v1` uses one verified adapter only after explicit
+	research approval.
+
+The local and RAG paths share one lazily loaded backend. When PEFT is active, a base
+or RAG request disables adapters rather than loading another base model. Outcomes
+bind the action, inference configuration, prepared prompt catalog, hardware/runtime,
+and adapter identity. A changed or unverifiable identity cannot resume an old
+observation.
+
+All LoRA actions are unapproved in the default routing configuration. The formal M2
+adapter matrix must be reviewed before changing an action to `approved: true`.
+Adapter artifact existence is a separate technical gate and is not treated as
+evidence of useful specialization.
+
+Local and RAG model outputs have `unknown` semantic safety in Phase 4 because no
+learned moderation system is included. Their quality is measured, but the default
+hard policy does not count unknown-safety output as oracle-feasible.
+
 ## Observed Oracle and Routing Opportunity
 
 For each benchmark example, the observed prompt-profile oracle selects the highest
@@ -129,5 +154,9 @@ created enough differentiation to justify router training.
 Phase 3 includes deterministic specialist training data, four LoRA adapters,
 resumable sequential training, adapter switching, and a fixed-general-prompt weight
 matrix. It reports aggregate observed oracle opportunity but excludes per-example
-router labels, router training, verification, parallel collaboration, hosted-model
-escalation, contextual bandits, sequential RL, dashboards, and deployment.
+router labels and router training.
+
+Phase 4 adds candidate workflow measurement around those model paths, including
+policy gates, exact tools, BM25-RAG, provider-neutral replay, nullable telemetry,
+and constrained oracle/Pareto reports. It still excludes live hosted-model calls,
+learned routing, contextual bandits, sequential RL, dashboards, and deployment.
