@@ -10,6 +10,7 @@ __pycache__/
 htmlcov/
 data/processed/
 data/training/
+data/routing/
 artifacts/adapters/
 reports/
 .env

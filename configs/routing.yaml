@@ -1,0 +1,146 @@
+schema_version: 1
+seed: 42
+model:
+  model_id: Qwen/Qwen2.5-1.5B-Instruct
+  revision: 989aa7980e4cf806f80c7fef2b1adb7bc71aa306
+  prompt_profile: general
+  adapter_root: artifacts/adapters
+data:
+  development_size_per_domain: 50
+  test_size_per_domain: 50
+  local_files_only: false
+  output_dir: data/routing
+  benchmark_path: data/processed/benchmark.jsonl
+  benchmark_manifest_path: data/processed/manifest.json
+  training_train_path: data/training/train.jsonl
+  training_validation_path: data/training/validation.jsonl
+  training_manifest_path: data/training/manifest.json
+  sources:
+    math:
+      dataset: openai/gsm8k
+      config: main
+      split: test
+      revision: 740312add88f781978c0658806c59bc2815b9866
+    code:
+      dataset: google-research-datasets/mbpp
+      config: sanitized
+      split: test
+      revision: 4bb6404fdc6cacfda99d4ac4205087b89d32030c
+    logic:
+      dataset: allenai/ai2_arc
+      config: ARC-Challenge
+      split: test
+      revision: 210d026faf9955653af8916fad021475a3f00453
+    knowledge:
+      dataset: hotpotqa/hotpot_qa
+      config: distractor
+      split: validation
+      revision: 1908d6afbbead072334abe2965f91bd2709910ab
+actions:
+  tool.calculator.v1:
+    kind: tool
+    enabled: true
+    tool_id: calculator.v1
+  local.qwen-base.v1:
+    kind: local_model
+    enabled: true
+    adapter: null
+    approved: true
+    max_new_tokens: 512
+  local.qwen-lora-math.v1:
+    kind: local_model
+    enabled: true
+    adapter: math
+    approved: false
+    max_new_tokens: 128
+  local.qwen-lora-code.v1:
+    kind: local_model
+    enabled: true
+    adapter: code
+    approved: false
+    max_new_tokens: 512
+  local.qwen-lora-logic.v1:
+    kind: local_model
+    enabled: true
+    adapter: logic
+    approved: false
+    max_new_tokens: 128
+  local.qwen-lora-knowledge.v1:
+    kind: local_model
+    enabled: true
+    adapter: knowledge
+    approved: false
+    max_new_tokens: 128
+  rag.bm25-qwen-base.v1:
+    kind: retrieval
+    enabled: true
+    retriever_id: bm25.rank-bm25-0.2.2
+    corpus_id: hotpotqa.routing.v1
+    generator_action_id: local.qwen-base.v1
+    max_new_tokens: 128
+  remote.strong-replay.reference.v1:
+    kind: strong_replay
+    enabled: true
+    provider_id: provider-neutral-replay
+    model_id: reference-strong-model
+    model_version: v1
+    pricing_schedule_id: reference-usd-v1
+    max_new_tokens: 512
+retrieval:
+  library: rank_bm25
+  library_version: 0.2.2
+  algorithm: BM25Okapi
+  tokenizer: unicode-lower-regex-v1
+  corpus_id: hotpotqa.routing.v1
+  top_k_values:
+    - 1
+    - 3
+    - 5
+    - 10
+  generation_top_k: 5
+  stable_tie_break: document_id
+calculator:
+  tool_id: calculator.v1
+  operators:
+    - add
+    - subtract
+    - multiply
+    - divide
+    - power
+  max_expression_length: 256
+  max_ast_depth: 16
+  max_operations: 32
+  max_abs_value: 1000000000000.0
+  max_exponent: 12
+policy_defaults:
+  data_classification: public
+  network_allowed: true
+  allowed_corpus_ids:
+    - hotpotqa.routing.v1
+  allowed_tool_ids:
+    - calculator.v1
+  required_quality: 0.8
+  allow_unknown_output_safety: false
+analysis:
+  quality_floors:
+    - 0.0
+    - 0.5
+    - 0.8
+    - 1.0
+  objective_metrics:
+    - provider_fee_usd
+    - wall_latency_ms
+    - energy_joules
+  bootstrap_resamples: 1000
+  confidence_level: 0.95
+replay:
+  directory: data/routing/replay
+  pricing_path: data/routing/pricing.json
+  require_verified_safety_status: true
+  allow_network_calls: false
+telemetry:
+  currency: USD
+  energy_required_for_primary_analysis: false
+  allow_estimated_energy_in_primary_analysis: false
+output:
+  report_root: reports/workflow-matrix
