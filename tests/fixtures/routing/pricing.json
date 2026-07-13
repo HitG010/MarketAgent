@@ -1,0 +1,1 @@
+{"catalog_fingerprint":"ea76f2cfe648fc5148d5bb52afc16e80a21901532ac7ba29a572c0b0ffb81dc0","currency":"USD","entries":{"reference-usd-v1":{"completion_usd_per_million_tokens":30.0,"model_id":"reference-strong-model","model_version":"v1","pricing_schedule_id":"reference-usd-v1","prompt_usd_per_million_tokens":10.0,"provider_id":"provider-neutral-replay"}},"schema_version":1}

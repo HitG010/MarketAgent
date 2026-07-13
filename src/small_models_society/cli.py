@@ -45,7 +45,17 @@ from small_models_society.resources import (
     DEFAULT_BENCHMARK_CONFIG,
     DEFAULT_INFERENCE_CONFIG,
     DEFAULT_PROMPT_PROFILES,
+    DEFAULT_ROUTING_CONFIG,
     DEFAULT_TRAINING_CONFIG,
+)
+from small_models_society.routing.artifacts import load_workflow_requests
+from small_models_society.routing.config import load_routing_config
+from small_models_society.routing.registry import build_action_registry
+from small_models_society.routing.replay import (
+    import_replay_captures,
+    inspect_replay_catalog,
+    load_pricing_catalog,
+    load_verified_replay_catalog,
 )
 from small_models_society.sandbox import (
     DEFAULT_IMAGE,
@@ -462,6 +472,57 @@ def _configured_training(arguments: argparse.Namespace) -> TrainingConfig:
     )
 
 
+def _routing_replay_import(arguments: argparse.Namespace) -> int:
+    config = load_routing_config(arguments.config)
+    pricing_path = arguments.pricing or Path(config.replay.pricing_path)
+    output_path = arguments.output or Path(config.replay.directory) / "rows.jsonl"
+    pricing = load_pricing_catalog(pricing_path)
+    result = import_replay_captures(
+        arguments.captures,
+        arguments.requests,
+        output_path,
+        config,
+        build_action_registry(config),
+        pricing,
+        overwrite=arguments.overwrite,
+    )
+    _print_json(
+        {
+            "manifest": str(result.manifest_path),
+            "pricing_catalog_fingerprint": pricing.catalog_fingerprint,
+            "row_count": result.rows_artifact.row_count,
+            "rows": str(result.rows_path),
+            "rows_sha256": result.rows_artifact.sha256,
+        }
+    )
+    return 0
+
+
+def _routing_replay_inspect(arguments: argparse.Namespace) -> int:
+    config = load_routing_config(arguments.config)
+    pricing_path = arguments.pricing or Path(config.replay.pricing_path)
+    rows_path = arguments.rows or Path(config.replay.directory) / "rows.jsonl"
+    pricing = load_pricing_catalog(pricing_path)
+    registry = build_action_registry(config)
+    catalog = load_verified_replay_catalog(
+        rows_path,
+        arguments.requests,
+        config,
+        registry,
+        pricing,
+    )
+    requests = load_workflow_requests(arguments.requests)
+    inspection = inspect_replay_catalog(catalog, requests)
+    _print_json(
+        {
+            **inspection.model_dump(mode="json"),
+            "pricing_catalog_fingerprint": pricing.catalog_fingerprint,
+            "rows": str(rows_path),
+        }
+    )
+    return 0
+
+
 def _training_doctor(arguments: argparse.Namespace) -> int:
     config = _configured_training(arguments)
     report = detect_training_hardware(config, allow_cpu=arguments.allow_cpu)
@@ -802,6 +863,30 @@ def build_parser() -> argparse.ArgumentParser:
     )
     _add_training_run_arguments(training_all_parser)
     training_all_parser.set_defaults(handler=_training_train_all)
+
+    routing_parser = commands.add_parser("routing", help="prepare and inspect workflow routing")
+    routing_commands = routing_parser.add_subparsers(dest="routing_command", required=True)
+    replay_import_parser = routing_commands.add_parser(
+        "replay-import",
+        help="validate and publish offline strong-model captures",
+    )
+    replay_import_parser.add_argument("--config", type=Path, default=DEFAULT_ROUTING_CONFIG)
+    replay_import_parser.add_argument("--requests", type=Path, required=True)
+    replay_import_parser.add_argument("--captures", type=Path, required=True)
+    replay_import_parser.add_argument("--pricing", type=Path)
+    replay_import_parser.add_argument("--output", type=Path)
+    replay_import_parser.add_argument("--overwrite", action="store_true")
+    replay_import_parser.set_defaults(handler=_routing_replay_import)
+
+    replay_inspect_parser = routing_commands.add_parser(
+        "replay-inspect",
+        help="verify replay rows and report offline coverage",
+    )
+    replay_inspect_parser.add_argument("--config", type=Path, default=DEFAULT_ROUTING_CONFIG)
+    replay_inspect_parser.add_argument("--requests", type=Path, required=True)
+    replay_inspect_parser.add_argument("--pricing", type=Path)
+    replay_inspect_parser.add_argument("--rows", type=Path)
+    replay_inspect_parser.set_defaults(handler=_routing_replay_inspect)
 
     doctor_parser = commands.add_parser("doctor", help="check local prerequisites")
     doctor_parser.add_argument("--config", type=Path, default=DEFAULT_BENCHMARK_CONFIG)
