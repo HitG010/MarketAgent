@@ -136,10 +136,10 @@ class TrainingConfig(StrictModel):
     sft: SupervisedFineTuningConfig
     output: TrainingOutputConfig
 
-    def fingerprint(self) -> str:
-        """Return a stable hash of every behavior-affecting training field."""
-
+    def _fingerprint(self, *, include_local_files_only: bool) -> str:
         values = self.model_dump(mode="json")
+        if not include_local_files_only:
+            values["model"].pop("local_files_only")
         for field in (
             "output_dir",
             "benchmark_path",
@@ -149,6 +149,31 @@ class TrainingConfig(StrictModel):
         values["output"].pop("adapter_root")
         payload = canonical_json(values).encode("utf-8")
         return hashlib.sha256(payload).hexdigest()
+
+    def fingerprint(self) -> str:
+        """Hash training behavior while excluding paths and cache-access policy."""
+
+        return self._fingerprint(include_local_files_only=False)
+
+    def accepted_fingerprints(self) -> frozenset[str]:
+        """Return current and pre-0.4 cache-policy-sensitive fingerprints."""
+
+        legacy_online = self.model_copy(
+            update={"model": self.model.model_copy(update={"local_files_only": False})}
+        )
+        legacy_offline = self.model_copy(
+            update={"model": self.model.model_copy(update={"local_files_only": True})}
+        )
+        return frozenset(
+            {
+                self.fingerprint(),
+                legacy_online._fingerprint(include_local_files_only=True),
+                legacy_offline._fingerprint(include_local_files_only=True),
+            }
+        )
+
+    def accepts_fingerprint(self, value: object) -> bool:
+        return isinstance(value, str) and value in self.accepted_fingerprints()
 
 
 def load_training_config(path: Path) -> TrainingConfig:

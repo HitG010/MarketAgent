@@ -129,6 +129,27 @@ def _sft_artifacts(
     return train_path, validation_path, manifest_path
 
 
+def test_offline_training_accepts_legacy_online_sft_manifest(tmp_path: Path) -> None:
+    online = _config(tmp_path)
+    train_path, validation_path, manifest_path = _sft_artifacts(tmp_path, online)
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    manifest["training_config_sha256"] = online._fingerprint(include_local_files_only=True)
+    manifest_path.write_text(canonical_json(manifest) + "\n", encoding="utf-8")
+    offline = online.model_copy(
+        update={"model": online.model.model_copy(update={"local_files_only": True})}
+    )
+
+    bundle = load_sft_dataset_bundle(
+        offline,
+        train_path,
+        validation_path,
+        manifest_path,
+    )
+
+    assert len(bundle.train_records) == 4
+    assert len(bundle.validation_records) == 4
+
+
 class FakeBackend:
     def __init__(self, *, fail: bool = False, hash_mismatch: bool = False) -> None:
         self.fail = fail

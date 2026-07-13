@@ -39,10 +39,11 @@ def _completed_manifest(
     config: TrainingConfig,
     domain: Domain,
     adapter_sha256: str,
+    training_config_fingerprint: str | None = None,
 ) -> AdapterRunManifest:
     values: dict[str, object] = {
         "schema_version": 1,
-        "training_config_fingerprint": config.fingerprint(),
+        "training_config_fingerprint": (training_config_fingerprint or config.fingerprint()),
         "sft_manifest_sha256": "1" * 64,
         "sft_train_sha256": "2" * 64,
         "sft_validation_sha256": "3" * 64,
@@ -88,7 +89,12 @@ def _completed_manifest(
     return AdapterRunManifest.model_validate(values)
 
 
-def _write_adapter(root: Path, config: TrainingConfig, domain: Domain) -> None:
+def _write_adapter(
+    root: Path,
+    config: TrainingConfig,
+    domain: Domain,
+    training_config_fingerprint: str | None = None,
+) -> None:
     path = root / domain.value
     path.mkdir(parents=True)
     weights = f"weights-{domain.value}".encode()
@@ -105,7 +111,12 @@ def _write_adapter(root: Path, config: TrainingConfig, domain: Domain) -> None:
         "target_modules": [module.value for module in config.lora.target_modules],
     }
     (path / "adapter_config.json").write_text(json.dumps(adapter_config), encoding="utf-8")
-    manifest = _completed_manifest(config, domain, weights_sha256)
+    manifest = _completed_manifest(
+        config,
+        domain,
+        weights_sha256,
+        training_config_fingerprint,
+    )
     (path / "manifest.json").write_text(
         canonical_json(manifest.model_dump(mode="json")) + "\n",
         encoding="utf-8",
@@ -129,6 +140,24 @@ def test_loads_four_verified_adapter_specs(tmp_path: Path) -> None:
     assert set(catalog.adapters) == set(Domain)
     assert catalog.model_id == training.model.model_id
     assert all(len(adapter.sha256) == 64 for adapter in catalog.adapters.values())
+
+
+def test_loads_legacy_online_adapters_with_offline_cache_policy(tmp_path: Path) -> None:
+    online = _training_config(tmp_path)
+    legacy_fingerprint = online._fingerprint(include_local_files_only=True)
+    for domain in Domain:
+        _write_adapter(tmp_path, online, domain, legacy_fingerprint)
+    offline = online.model_copy(
+        update={"model": online.model.model_copy(update={"local_files_only": True})}
+    )
+
+    catalog = load_adapter_catalog(
+        tmp_path,
+        offline,
+        load_inference_config(INFERENCE_CONFIG),
+    )
+
+    assert set(catalog.adapters) == set(Domain)
 
 
 @pytest.mark.parametrize(

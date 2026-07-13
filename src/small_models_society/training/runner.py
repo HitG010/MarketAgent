@@ -195,7 +195,7 @@ def load_sft_dataset_bundle(
         manifest = _mapping(json.loads(manifest_bytes), "SFT manifest")
     except (OSError, json.JSONDecodeError) as error:
         raise ValueError(f"invalid SFT manifest: {manifest_path}") from error
-    if manifest.get("training_config_sha256") != config.fingerprint():
+    if not config.accepts_fingerprint(manifest.get("training_config_sha256")):
         raise ValueError("SFT manifest uses a different training configuration")
     if manifest.get("prompt_profile") != "general":
         raise ValueError("SFT data must use the fixed general prompt profile")

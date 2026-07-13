@@ -67,6 +67,23 @@ def test_training_fingerprint_excludes_artifact_locations() -> None:
     assert first.fingerprint() == TrainingConfig.model_validate(changed).fingerprint()
 
 
+def test_training_fingerprint_excludes_cache_access_policy() -> None:
+    online = load_training_config(CONFIG_PATH)
+    offline = online.model_copy(
+        update={"model": online.model.model_copy(update={"local_files_only": True})}
+    )
+
+    assert online.fingerprint() == offline.fingerprint()
+    assert online.accepted_fingerprints() == offline.accepted_fingerprints()
+    assert online.accepts_fingerprint(online._fingerprint(include_local_files_only=True))
+    assert offline.accepts_fingerprint(offline._fingerprint(include_local_files_only=True))
+
+    changed = online.model_copy(
+        update={"sft": online.sft.model_copy(update={"learning_rate": 0.0002})}
+    )
+    assert not changed.accepts_fingerprint(online.fingerprint())
+
+
 @pytest.mark.parametrize(
     ("section_name", "field", "value"),
     [

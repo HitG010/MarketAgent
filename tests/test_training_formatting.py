@@ -9,7 +9,7 @@ import pytest
 
 from small_models_society.data.config import DatasetSource
 from small_models_society.data.loaders import SourceRow
-from small_models_society.data.prepare import load_benchmark
+from small_models_society.data.prepare import canonical_json, load_benchmark
 from small_models_society.inference.prompts import PromptProfileName, load_prompt_catalog
 from small_models_society.schemas import Domain
 from small_models_society.training.config import TrainingConfig, load_training_config
@@ -262,6 +262,39 @@ def test_source_manifest_hash_is_enforced(tmp_path: Path) -> None:
             source.manifest_path,
             tmp_path / "sft",
         )
+
+
+def test_sft_formatting_accepts_legacy_source_manifest_from_other_cache_mode(
+    tmp_path: Path,
+) -> None:
+    online = _small_config()
+    catalog = load_prompt_catalog(PROMPT_PATH)
+    tokenizer = FakeTokenizer()
+    source = prepare_training_data(
+        online,
+        tmp_path / "source",
+        _fixture_rows,
+        leakage_index=BenchmarkLeakageIndex(frozenset(), frozenset(), "0" * 64),
+    )
+    manifest = json.loads(source.manifest_path.read_text(encoding="utf-8"))
+    manifest["training_config_sha256"] = online._fingerprint(include_local_files_only=True)
+    source.manifest_path.write_text(canonical_json(manifest) + "\n", encoding="utf-8")
+    offline = online.model_copy(
+        update={"model": online.model.model_copy(update={"local_files_only": True})}
+    )
+
+    prepared = prepare_sft_data(
+        offline,
+        catalog,
+        tokenizer,
+        source.train_path,
+        source.validation_path,
+        source.manifest_path,
+        tmp_path / "sft",
+    )
+
+    assert prepared.train_row_count == 4
+    assert prepared.validation_row_count == 4
 
 
 def test_missing_code_solution_is_rejected() -> None:

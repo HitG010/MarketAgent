@@ -119,6 +119,12 @@ Train all four sequentially:
 base model and accelerator allocations are released between adapters. It does not
 train adapters concurrently.
 
+`--local-files-only` controls cache/network access and is not part of training
+artifact identity. Data prepared during an online cache-warming run can therefore
+be trained later with `--local-files-only`. Source, SFT, and completed-adapter
+manifests created before this correction remain compatible when that flag is the
+only difference.
+
 Completed outputs use this layout:
 
 ```text
@@ -233,6 +239,10 @@ Remove-Item Env:SMS_RUN_TRAINING_TESTS
   alter the existing run's fingerprint or silently switch to CPU.
 - **Resume mismatch:** use the original data/config/software/hardware inputs or
   start a separate run with `--overwrite`.
+- **SFT manifest uses a different training configuration:** update to the current
+  code first. Cache policy differences are accepted; any remaining mismatch means
+  a behavior-affecting model, data, LoRA, or SFT setting changed, so rerun
+  `training prepare --overwrite` with the intended configuration.
 - **Adapter catalog rejection:** inspect base revision, LoRA fields, manifest, and
   `adapter_model.safetensors` SHA-256 before evaluating.
 - **Code matrix failure before scoring:** start Docker and build the sandbox image

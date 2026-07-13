@@ -139,7 +139,7 @@ def load_adapter_catalog(
             raise ValueError(f"adapter base model ID does not match: {path}")
         if manifest.model_revision != training_config.model.revision:
             raise ValueError(f"adapter base revision does not match: {path}")
-        if manifest.training_config_fingerprint != training_config.fingerprint():
+        if not training_config.accepts_fingerprint(manifest.training_config_fingerprint):
             raise ValueError(f"adapter training configuration does not match: {path}")
         weights_path = path / "adapter_model.safetensors"
         if not weights_path.is_file() or weights_path.stat().st_size <= 0:

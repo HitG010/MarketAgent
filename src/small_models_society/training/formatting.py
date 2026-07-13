@@ -261,7 +261,7 @@ def prepare_sft_data(
         )
     except (OSError, json.JSONDecodeError) as error:
         raise ValueError(f"invalid source training manifest: {source_manifest_path}") from error
-    if source_manifest.get("training_config_sha256") != config.fingerprint():
+    if not config.accepts_fingerprint(source_manifest.get("training_config_sha256")):
         raise ValueError("source training manifest uses a different training configuration")
     files = _manifest_mapping(source_manifest.get("files"), "source training files")
     train_source_records = _verify_source_file(
