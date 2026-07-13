@@ -23,6 +23,7 @@ from small_models_society.routing.data import (
     prepare_routing_data,
 )
 from small_models_society.schemas import Domain, KnowledgeExample
+from small_models_society.tools.calculator import evaluate_calculator_suite
 from small_models_society.training.contracts import SourceTrainingRecord, TrainingSplit
 from small_models_society.training.prepare import (
     load_benchmark_leakage_index,
@@ -271,6 +272,17 @@ def test_calculator_companion_is_deterministic_and_separate(tmp_path: Path) -> N
         assert request.messages[-1].content == evaluator.expression
         assert request.output_contract is OutputContract.NUMERIC
         assert '"expected_output"' not in request.model_dump_json()
+
+    all_requests = [*development_requests, *test_requests]
+    all_evaluators = [*development_evaluators, *test_evaluators]
+    metrics = evaluate_calculator_suite(
+        all_requests,
+        {record.request_id: record.expected_output for record in all_evaluators},
+        config.calculator,
+    )
+    assert metrics.coverage == 1
+    assert metrics.supported_accuracy == 1
+    assert metrics.overall_accuracy == 1
 
     manifest = json.loads(prepared.manifest_path.read_text(encoding="utf-8"))
     calculator = manifest["companion_suites"]["calculator"]
