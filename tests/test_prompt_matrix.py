@@ -21,6 +21,12 @@ from small_models_society.schemas import Domain
 CONFIG_PATH = Path(__file__).parents[1] / "configs" / "inference.yaml"
 PROMPT_CONFIG = Path(__file__).parents[1] / "configs" / "prompt_profiles.yaml"
 FIXTURE_BENCHMARK = Path(__file__).parent / "fixtures" / "benchmark.jsonl"
+DOMAIN_BY_REQUEST_ID = {
+    "fixture-math-1": Domain.MATH,
+    "fixture-code-1": Domain.CODE,
+    "fixture-logic-1": Domain.LOGIC,
+    "fixture-knowledge-1": Domain.KNOWLEDGE,
+}
 
 
 class ProfileAwareBackend:
@@ -35,7 +41,8 @@ class ProfileAwareBackend:
 
     def generate(self, request: GenerationRequest) -> GenerationOutput:
         self.requests.append(request)
-        is_own_specialty = request.profile == request.example.domain.value
+        domain = DOMAIN_BY_REQUEST_ID[request.request_id]
+        is_own_specialty = request.profile == domain.value
         correct = {
             Domain.MATH: "10",
             Domain.CODE: "def add(a, b):\n    return a + b",
@@ -49,7 +56,7 @@ class ProfileAwareBackend:
             Domain.KNOWLEDGE: "London",
         }
         return GenerationOutput(
-            text=(correct if is_own_specialty else wrong)[request.example.domain],
+            text=(correct if is_own_specialty else wrong)[domain],
             prompt_tokens=10,
             completion_tokens=2,
             latency_ms=5,
@@ -115,9 +122,10 @@ def test_prompt_matrix_builds_full_profile_domain_experiment(tmp_path: Path) -> 
     )
 
     assert len(backend.requests) == 20
-    assert {(request.profile, request.example.domain.value) for request in backend.requests} == {
-        (profile.value, domain.value) for profile in PromptProfileName for domain in Domain
-    }
+    assert {
+        (request.profile, DOMAIN_BY_REQUEST_ID[request.request_id].value)
+        for request in backend.requests
+    } == {(profile.value, domain.value) for profile in PromptProfileName for domain in Domain}
     matrix = result.summary["profile_by_domain"]
     assert matrix["general"] == {
         "math": 0.0,

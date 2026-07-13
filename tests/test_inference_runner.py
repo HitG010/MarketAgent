@@ -31,6 +31,12 @@ from small_models_society.schemas import Domain, PredictionStatus
 CONFIG_PATH = Path(__file__).parents[1] / "configs" / "inference.yaml"
 PROMPT_CONFIG = Path(__file__).parents[1] / "configs" / "prompt_profiles.yaml"
 FIXTURE_BENCHMARK = Path(__file__).parent / "fixtures" / "benchmark.jsonl"
+DOMAIN_BY_REQUEST_ID = {
+    "fixture-math-1": Domain.MATH,
+    "fixture-code-1": Domain.CODE,
+    "fixture-logic-1": Domain.LOGIC,
+    "fixture-knowledge-1": Domain.KNOWLEDGE,
+}
 
 
 class FakeBackend:
@@ -43,9 +49,10 @@ class FakeBackend:
 
     def generate(self, request: GenerationRequest) -> GenerationOutput:
         self.requests.append(request)
-        failure = self.failures.get(request.example.id)
+        failure = self.failures.get(request.request_id)
         if failure is not None:
             raise failure
+        domain = DOMAIN_BY_REQUEST_ID[request.request_id]
         responses = {
             Domain.MATH: "10",
             Domain.CODE: "```python\ndef add(a, b):\n    return a + b\n```",
@@ -53,7 +60,7 @@ class FakeBackend:
             Domain.KNOWLEDGE: "Paris",
         }
         return GenerationOutput(
-            text=responses[request.example.domain],
+            text=responses[domain],
             prompt_tokens=10,
             completion_tokens=2,
             latency_ms=3.5,
@@ -429,7 +436,7 @@ def test_domain_and_limit_filters_preserve_benchmark_order(tmp_path: Path) -> No
     )
 
     assert result.manifest.example_ids == ["fixture-math-1", "fixture-logic-1"]
-    assert [request.example.domain for request in backend.requests] == [
+    assert [DOMAIN_BY_REQUEST_ID[request.request_id] for request in backend.requests] == [
         Domain.MATH,
         Domain.LOGIC,
     ]
@@ -453,51 +460,51 @@ def test_fail_fast_preserves_completed_checkpoint(tmp_path: Path) -> None:
     assert [prediction.example_id for prediction in load_predictions(output)] == ["fixture-math-1"]
 
 
-def test_out_of_memory_is_always_fatal(tmp_path: Path) -> None:
+def test_adapter_identity_enters_requests_manifest_rows_and_resume(tmp_path: Path) -> None:
+    output = tmp_path / "adapter.jsonl"
+    backend = FakeBackend()
+    adapter = AdapterReference(
+        name="math",
+        sha256="a" * 64,
+        run_fingerprint="b" * 64,
+    )
+    options = PredictionRunOptions(
+        domains=[Domain.MATH],
+        adapter=adapter,
+    )
 
-    def test_adapter_identity_enters_requests_manifest_rows_and_resume(tmp_path: Path) -> None:
-        output = tmp_path / "adapter.jsonl"
-        backend = FakeBackend()
-        adapter = AdapterReference(
-            name="math",
-            sha256="a" * 64,
-            run_fingerprint="b" * 64,
-        )
-        options = PredictionRunOptions(
-            domains=[Domain.MATH],
-            adapter=adapter,
-        )
+    result = run_predictions(
+        FIXTURE_BENCHMARK,
+        output,
+        _config(),
+        _catalog(),
+        _hardware(),
+        backend,
+        options,
+    )
 
-        result = run_predictions(
+    assert result.manifest.adapter_name == "math"
+    assert result.manifest.adapter_sha256 == "a" * 64
+    assert backend.requests[0].adapter == "math"
+    assert result.predictions[0].metadata["adapter"] == "math"
+    assert result.predictions[0].metadata["adapter_sha256"] == "a" * 64
+
+    predictions = load_predictions(output)
+    metadata = {**predictions[0].metadata, "adapter_sha256": "c" * 64}
+    write_predictions(output, [predictions[0].model_copy(update={"metadata": metadata})])
+    with pytest.raises(ResumeMismatchError, match="adapter hash"):
+        run_predictions(
             FIXTURE_BENCHMARK,
             output,
             _config(),
             _catalog(),
             _hardware(),
             backend,
-            options,
+            options.model_copy(update={"resume": True}),
         )
 
-        assert result.manifest.adapter_name == "math"
-        assert result.manifest.adapter_sha256 == "a" * 64
-        assert backend.requests[0].adapter == "math"
-        assert result.predictions[0].metadata["adapter"] == "math"
-        assert result.predictions[0].metadata["adapter_sha256"] == "a" * 64
 
-        predictions = load_predictions(output)
-        metadata = {**predictions[0].metadata, "adapter_sha256": "c" * 64}
-        write_predictions(output, [predictions[0].model_copy(update={"metadata": metadata})])
-        with pytest.raises(ResumeMismatchError, match="adapter hash"):
-            run_predictions(
-                FIXTURE_BENCHMARK,
-                output,
-                _config(),
-                _catalog(),
-                _hardware(),
-                backend,
-                options.model_copy(update={"resume": True}),
-            )
-
+def test_out_of_memory_is_always_fatal(tmp_path: Path) -> None:
     output = tmp_path / "oom.jsonl"
     backend = FakeBackend({"fixture-code-1": InferenceOutOfMemoryError("oom")})
 

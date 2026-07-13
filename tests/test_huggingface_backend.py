@@ -174,7 +174,7 @@ def _hardware(device: str = "cpu", dtype: str = "float32") -> HardwareReport:
 def _request(max_new_tokens: int = 2) -> GenerationRequest:
     example = to_inference_example(load_benchmark(FIXTURE_BENCHMARK)[0])
     return GenerationRequest(
-        example=example,
+        request_id=example.id,
         profile="general",
         messages=[
             ChatMessage(role="system", content="Be careful."),

@@ -144,7 +144,7 @@ def render_generation_request(
 ) -> GenerationRequest:
     profile_name = PromptProfileName(profile)
     return GenerationRequest(
-        example=example,
+        request_id=example.id,
         profile=profile_name.value,
         adapter=adapter,
         messages=render_messages(example, catalog, profile_name),

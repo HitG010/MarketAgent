@@ -312,7 +312,7 @@ def _request(adapter: str | None) -> GenerationRequest:
 
     example = to_inference_example(load_benchmark(FIXTURE_BENCHMARK)[0])
     return GenerationRequest(
-        example=example,
+        request_id=example.id,
         profile="general",
         adapter=adapter,
         messages=[

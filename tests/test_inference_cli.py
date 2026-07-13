@@ -13,6 +13,12 @@ from small_models_society.inference.hardware import HardwareReport
 from small_models_society.schemas import Domain
 
 FIXTURE_BENCHMARK = Path(__file__).parent / "fixtures" / "benchmark.jsonl"
+DOMAIN_BY_REQUEST_ID = {
+    "fixture-math-1": Domain.MATH,
+    "fixture-code-1": Domain.CODE,
+    "fixture-logic-1": Domain.LOGIC,
+    "fixture-knowledge-1": Domain.KNOWLEDGE,
+}
 
 
 class FakeBackend:
@@ -23,6 +29,7 @@ class FakeBackend:
 
     def generate(self, request: GenerationRequest) -> GenerationOutput:
         self.requests.append(request)
+        domain = DOMAIN_BY_REQUEST_ID[request.request_id]
         responses = {
             Domain.MATH: "10",
             Domain.CODE: "def add(a, b):\n    return a + b",
@@ -30,7 +37,7 @@ class FakeBackend:
             Domain.KNOWLEDGE: "Paris",
         }
         return GenerationOutput(
-            text=responses[request.example.domain],
+            text=responses[domain],
             prompt_tokens=10,
             completion_tokens=2,
             latency_ms=4,

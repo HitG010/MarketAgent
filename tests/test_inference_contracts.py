@@ -76,7 +76,7 @@ class EchoBackend:
 def test_backend_protocol_is_independent_of_transformers() -> None:
     example = to_inference_example(load_benchmark(FIXTURE_BENCHMARK)[0])
     request = GenerationRequest(
-        example=example,
+        request_id=example.id,
         profile="general",
         messages=[ChatMessage(role="user", content="Answer this question.")],
         max_new_tokens=16,
@@ -87,3 +87,4 @@ def test_backend_protocol_is_independent_of_transformers() -> None:
 
     assert output.text == "Answer this question."
     assert output.prompt_tokens == 4
+    assert '"domain"' not in request.model_dump_json()

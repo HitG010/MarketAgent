@@ -84,7 +84,7 @@ class AdapterReference(StrictModel):
 
 
 class GenerationRequest(StrictModel):
-    example: InferenceExample
+    request_id: str = Field(min_length=1)
     profile: str = Field(min_length=1)
     adapter: str | None = Field(default=None, min_length=1)
     messages: list[ChatMessage] = Field(min_length=1)

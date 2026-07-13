@@ -25,6 +25,12 @@ ROOT = Path(__file__).parents[1]
 CONFIG_PATH = ROOT / "configs" / "inference.yaml"
 PROMPT_CONFIG = ROOT / "configs" / "prompt_profiles.yaml"
 FIXTURE_BENCHMARK = Path(__file__).parent / "fixtures" / "benchmark.jsonl"
+DOMAIN_BY_REQUEST_ID = {
+    "fixture-math-1": Domain.MATH,
+    "fixture-code-1": Domain.CODE,
+    "fixture-logic-1": Domain.LOGIC,
+    "fixture-knowledge-1": Domain.KNOWLEDGE,
+}
 
 
 class AdapterAwareBackend:
@@ -33,7 +39,8 @@ class AdapterAwareBackend:
 
     def generate(self, request: GenerationRequest) -> GenerationOutput:
         self.requests.append(request)
-        is_own_specialty = request.adapter == request.example.domain.value
+        domain = DOMAIN_BY_REQUEST_ID[request.request_id]
+        is_own_specialty = request.adapter == domain.value
         correct = {
             Domain.MATH: "10",
             Domain.CODE: "def add(a, b):\n    return a + b",
@@ -47,7 +54,7 @@ class AdapterAwareBackend:
             Domain.KNOWLEDGE: "London",
         }
         return GenerationOutput(
-            text=(correct if is_own_specialty else wrong)[request.example.domain],
+            text=(correct if is_own_specialty else wrong)[domain],
             prompt_tokens=10,
             completion_tokens=2,
             latency_ms=5,
